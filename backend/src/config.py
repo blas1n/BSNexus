@@ -4,11 +4,11 @@ from typing import Optional
 
 class Settings(BaseSettings):
     # Infrastructure
-    redis_url: str = "redis://localhost:6379"
-    database_url: str = "postgresql+asyncpg://bsnexus:bsnexus_dev@localhost:5432/bsnexus"
+    redis_url: str = "redis://redis:6379"
+    database_url: str = "postgresql+asyncpg://bsnexus:bsnexus_dev@postgres:5432/bsnexus"
 
     # Security
-    prompt_signing_key: str
+    prompt_signing_key: str = "dev-signing-key-change-in-production"
 
     # Server
     server_host: str = "0.0.0.0"
