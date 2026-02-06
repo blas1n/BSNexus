@@ -1,0 +1,25 @@
+# Auto detect text files and perform LF normalization
+* text=auto
+
+# Force Unix line endings for shell scripts
+*.sh text eol=lf
+
+# Force Unix line endings for Python files
+*.py text eol=lf
+
+# Force Unix line endings for config files
+*.yaml text eol=lf
+*.yml text eol=lf
+*.toml text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+
+# Proto files
+*.proto text eol=lf
+
+# Dockerfile
+Dockerfile* text eol=lf
+*.dockerfile text eol=lf
+
+# Environment files
+.env* text eol=lf
