@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
-from backend.src.api import projects, tasks
+from backend.src.api import projects, tasks, workers
 from backend.src.storage.database import init_db, engine
 from backend.src.storage.redis_client import get_redis, close_redis
 from backend.src.queue.streams import RedisStreamManager
@@ -78,3 +78,4 @@ async def health_deps():
 # API routers
 app.include_router(tasks.router)
 app.include_router(projects.router)
+app.include_router(workers.router)
