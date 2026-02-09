@@ -4,11 +4,11 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.src.models import Task, TaskHistory, TaskStatus, task_dependencies
+from backend.src.models import Task, TaskHistory, TaskStatus
 from backend.src.queue.streams import RedisStreamManager
+from backend.src.repositories.task_repository import TaskRepository
 
 
 class TaskStateMachine:
@@ -179,7 +179,8 @@ class TaskStateMachine:
         """Set completed_at and promote dependent tasks."""
         task.completed_at = datetime.now(timezone.utc)
         if db_session is not None:
-            await self.promote_dependents(task, db_session)
+            repo = TaskRepository(db_session)
+            await self._promote_dependents(task, repo, db_session)
 
     async def _on_rejected(
         self,
@@ -194,41 +195,20 @@ class TaskStateMachine:
         if reason is not None:
             task.error_message = reason
 
-    # ── Dependency Methods ────────────────────────────────────────────
+    # -- Dependency Methods ----------------------------------------------------
 
     async def check_dependencies_met(self, task: Task, db_session: AsyncSession) -> bool:
         """Check if all dependency tasks are in DONE status."""
-        result = await db_session.execute(
-            select(task_dependencies.c.dependency_id).where(task_dependencies.c.task_id == task.id)
-        )
-        dep_ids = result.scalars().all()
+        repo = TaskRepository(db_session)
+        return await repo.check_dependencies_met(task.id)
 
-        if not dep_ids:
-            return True
-
-        # Check all dependencies are done
-        result = await db_session.execute(
-            select(Task.id).where(
-                Task.id.in_(dep_ids),
-                Task.status != TaskStatus.done,
-            )
-        )
-        not_done = result.scalars().all()
-        return len(not_done) == 0
-
-    async def promote_dependents(self, task: Task, db_session: AsyncSession) -> list[Task]:
+    async def _promote_dependents(self, task: Task, repo: TaskRepository, db_session: AsyncSession) -> list[Task]:
         """Promote WAITING tasks that depend on the completed task to READY."""
-        result = await db_session.execute(
-            select(Task).where(
-                Task.id.in_(select(task_dependencies.c.task_id).where(task_dependencies.c.dependency_id == task.id)),
-                Task.status == TaskStatus.waiting,
-            )
-        )
-        waiting_tasks = list(result.scalars().all())
+        waiting_tasks = await repo.find_waiting_dependents(task.id)
 
         promoted: list[Task] = []
         for waiting_task in waiting_tasks:
-            if await self.check_dependencies_met(waiting_task, db_session):
+            if await repo.check_dependencies_met(waiting_task.id):
                 waiting_task.status = TaskStatus.ready
                 waiting_task.version += 1
 
@@ -243,3 +223,8 @@ class TaskStateMachine:
                 promoted.append(waiting_task)
 
         return promoted
+
+    async def promote_dependents(self, task: Task, db_session: AsyncSession) -> list[Task]:
+        """Promote WAITING tasks that depend on the completed task to READY (public API)."""
+        repo = TaskRepository(db_session)
+        return await self._promote_dependents(task, repo, db_session)
