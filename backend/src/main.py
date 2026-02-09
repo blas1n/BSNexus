@@ -4,10 +4,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
-from backend.src.api import projects, tasks, workers
+from backend.src.api import pm, projects, tasks, workers
+from backend.src.queue.background import start_background_consumer
+from backend.src.queue.streams import RedisStreamManager
 from backend.src.storage.database import init_db, engine
 from backend.src.storage.redis_client import get_redis, close_redis
-from backend.src.queue.streams import RedisStreamManager
 
 
 @asynccontextmanager
@@ -20,6 +21,7 @@ async def lifespan(app: FastAPI):
     await stream_manager.initialize_streams()
     app.state.redis = redis
     app.state.stream_manager = stream_manager
+    await start_background_consumer(app)
 
     yield
 
@@ -79,3 +81,4 @@ async def health_deps():
 app.include_router(tasks.router)
 app.include_router(projects.router)
 app.include_router(workers.router)
+app.include_router(pm.router)

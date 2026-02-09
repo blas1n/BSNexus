@@ -3,11 +3,19 @@ from __future__ import annotations
 import uuid
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
 from backend.src.models import Task, TaskPriority, TaskStatus, task_dependencies
 from backend.src.repositories.base import BaseRepository
+
+# Priority ordering for scheduling (critical first)
+PRIORITY_ORDER: dict[TaskPriority, int] = {
+    TaskPriority.critical: 0,
+    TaskPriority.high: 1,
+    TaskPriority.medium: 2,
+    TaskPriority.low: 3,
+}
 
 
 class TaskRepository(BaseRepository):
@@ -123,4 +131,27 @@ class TaskRepository(BaseRepository):
             )
         )
         return list(result.scalars().all())
+
+    async def count_by_status(self, project_id: uuid.UUID) -> dict[str, int]:
+        """Count tasks grouped by status for a project."""
+        result = await self.db.execute(
+            select(Task.status, func.count(Task.id))
+            .where(Task.project_id == project_id)
+            .group_by(Task.status)
+        )
+        counts: dict[str, int] = {}
+        for status, count in result.all():
+            counts[status.value if hasattr(status, "value") else str(status)] = count
+        return counts
+
+    async def list_ready_by_priority(self, project_id: uuid.UUID) -> list[Task]:
+        """Get READY tasks sorted by priority (critical first) then creation time."""
+        result = await self.db.execute(
+            select(Task)
+            .where(Task.project_id == project_id, Task.status == TaskStatus.ready)
+            .order_by(Task.created_at.asc())
+        )
+        tasks = list(result.scalars().all())
+        tasks.sort(key=lambda t: PRIORITY_ORDER.get(t.priority, 99))
+        return tasks
 
