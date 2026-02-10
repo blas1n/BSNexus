@@ -40,3 +40,6 @@ htmlcov/
 
 # Proto generated files
 shared/generated/
+
+# pnpm
+.pnpm-store/

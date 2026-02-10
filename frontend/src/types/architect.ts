@@ -1,0 +1,61 @@
+export type DesignSessionStatus = 'active' | 'finalized' | 'cancelled'
+export type MessageRole = 'user' | 'assistant'
+
+export interface DesignMessage {
+  id: string
+  session_id: string
+  role: MessageRole
+  content: string
+  created_at: string
+}
+
+export interface DesignSession {
+  id: string
+  project_id: string | null
+  status: DesignSessionStatus
+  created_at: string
+  updated_at: string
+  messages: DesignMessage[]
+}
+
+export interface LLMConfigInput {
+  api_key: string
+  model?: string
+  base_url?: string
+}
+
+export interface CreateSessionRequest {
+  llm_config: LLMConfigInput
+}
+
+export interface MessageRequest {
+  content: string
+}
+
+export interface DesignMessageResponse {
+  id: string
+  session_id: string
+  role: MessageRole
+  content: string
+  created_at: string
+}
+
+export interface FinalizeRequest {
+  repo_path: string
+  pm_llm_config?: LLMConfigInput
+}
+
+export interface AddTaskRequest {
+  phase_id: string
+  request_text: string
+  llm_config?: LLMConfigInput
+}
+
+export interface AddTaskResponse {
+  id: string
+  title: string
+  description: string | null
+  priority: string
+  worker_prompt: Record<string, unknown> | null
+  qa_prompt: Record<string, unknown> | null
+}
