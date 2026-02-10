@@ -1,0 +1,1715 @@
+from __future__ import annotations
+
+import uuid
+from datetime import datetime, timezone
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from fastapi import HTTPException, WebSocketDisconnect
+from httpx import AsyncClient
+
+from backend.src.models import (
+    DesignMessage,
+    DesignSession,
+    DesignSessionStatus,
+    MessageRole,
+    Phase,
+    PhaseStatus,
+    Project,
+    ProjectStatus,
+)
+
+
+# ── Helpers ──────────────────────────────────────────────────────────
+
+
+LLM_CONFIG = {"api_key": "sk-test-key-1234", "model": "gpt-4o"}
+
+
+async def create_session_via_api(client: AsyncClient) -> dict:
+    """Helper to create a session through the API."""
+    response = await client.post(
+        "/api/architect/sessions",
+        json={"llm_config": LLM_CONFIG},
+    )
+    assert response.status_code == 201
+    return response.json()
+
+
+async def create_session_in_db(db_session) -> DesignSession:
+    """Helper to create a session directly in DB."""
+    now = datetime.now(timezone.utc)
+    session = DesignSession(
+        id=uuid.uuid4(),
+        status=DesignSessionStatus.active,
+        llm_config=LLM_CONFIG,
+        created_at=now,
+        updated_at=now,
+    )
+    db_session.add(session)
+
+    # Add system message
+    msg = DesignMessage(
+        id=uuid.uuid4(),
+        session_id=session.id,
+        role=MessageRole.assistant,
+        content="System prompt",
+        created_at=now,
+    )
+    db_session.add(msg)
+    await db_session.commit()
+    return session
+
+
+async def create_project_with_phase(db_session) -> tuple[Project, Phase]:
+    """Helper to create a project and phase for add-task tests."""
+    now = datetime.now(timezone.utc)
+    project = Project(
+        id=uuid.uuid4(),
+        name="Test Project",
+        description="Test Description",
+        repo_path="/test/repo",
+        status=ProjectStatus.active,
+        llm_config={"architect": LLM_CONFIG},
+        created_at=now,
+        updated_at=now,
+    )
+    db_session.add(project)
+
+    phase = Phase(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        name="Phase 1",
+        description="First phase",
+        branch_name="phase/phase-1",
+        order=1,
+        status=PhaseStatus.active,
+        created_at=now,
+        updated_at=now,
+    )
+    db_session.add(phase)
+    await db_session.commit()
+    return project, phase
+
+
+# ── Session Creation Tests ───────────────────────────────────────────
+
+
+async def test_create_session_success(client: AsyncClient, db_session):
+    """POST /api/architect/sessions returns 201 with valid llm_config."""
+    data = await create_session_via_api(client)
+
+    assert "id" in data
+    assert data["status"] == "active"
+    assert data["project_id"] is None
+    assert len(data["messages"]) == 1
+    assert data["messages"][0]["role"] == "assistant"
+    assert "AI Architect" in data["messages"][0]["content"]
+
+
+async def test_create_session_stores_llm_config(client: AsyncClient, db_session):
+    """POST /api/architect/sessions stores llm_config in the session."""
+    response = await client.post(
+        "/api/architect/sessions",
+        json={"llm_config": {"api_key": "sk-custom", "model": "custom-model", "base_url": "https://custom.api"}},
+    )
+    assert response.status_code == 201
+    data = response.json()
+    # Verify we can retrieve it
+    get_resp = await client.get(f"/api/architect/sessions/{data['id']}")
+    assert get_resp.status_code == 200
+
+
+async def test_create_session_minimal_config(client: AsyncClient, db_session):
+    """POST /api/architect/sessions works with only api_key."""
+    response = await client.post(
+        "/api/architect/sessions",
+        json={"llm_config": {"api_key": "sk-minimal"}},
+    )
+    assert response.status_code == 201
+
+
+async def test_create_session_missing_api_key(client: AsyncClient, db_session):
+    """POST /api/architect/sessions returns 422 without api_key."""
+    response = await client.post(
+        "/api/architect/sessions",
+        json={"llm_config": {}},
+    )
+    assert response.status_code == 422
+
+
+# ── Get Session Tests ────────────────────────────────────────────────
+
+
+async def test_get_session_success(client: AsyncClient, db_session):
+    """GET /api/architect/sessions/{id} returns 200 with messages."""
+    data = await create_session_via_api(client)
+    session_id = data["id"]
+
+    response = await client.get(f"/api/architect/sessions/{session_id}")
+
+    assert response.status_code == 200
+    session_data = response.json()
+    assert session_data["id"] == session_id
+    assert session_data["status"] == "active"
+    assert len(session_data["messages"]) >= 1
+
+
+async def test_get_session_not_found(client: AsyncClient, db_session):
+    """GET /api/architect/sessions/{random_id} returns 404."""
+    random_id = str(uuid.uuid4())
+    response = await client.get(f"/api/architect/sessions/{random_id}")
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Session not found"
+
+
+# ── REST Message Tests ───────────────────────────────────────────────
+
+
+async def test_send_message_success(client: AsyncClient, db_session):
+    """POST /api/architect/sessions/{id}/message returns assistant response."""
+    session_data = await create_session_via_api(client)
+    session_id = session_data["id"]
+
+    mock_response = MagicMock()
+    mock_choice = MagicMock()
+    mock_choice.message.content = "I can help with that!"
+    mock_response.choices = [mock_choice]
+
+    with patch("backend.src.api.architect.LLMClient") as MockClient:
+        instance = MockClient.return_value
+        instance.chat = AsyncMock(return_value="I can help with that!")
+
+        response = await client.post(
+            f"/api/architect/sessions/{session_id}/message",
+            json={"content": "Help me design an API"},
+        )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["role"] == "assistant"
+    assert data["content"] == "I can help with that!"
+    assert data["session_id"] == session_id
+
+
+async def test_send_message_saves_user_message(client: AsyncClient, db_session):
+    """POST /api/architect/sessions/{id}/message saves user and assistant messages."""
+    session_data = await create_session_via_api(client)
+    session_id = session_data["id"]
+
+    with patch("backend.src.api.architect.LLMClient") as MockClient:
+        instance = MockClient.return_value
+        instance.chat = AsyncMock(return_value="Response")
+
+        await client.post(
+            f"/api/architect/sessions/{session_id}/message",
+            json={"content": "Hello"},
+        )
+
+    # Verify both messages are saved
+    get_resp = await client.get(f"/api/architect/sessions/{session_id}")
+    messages = get_resp.json()["messages"]
+    # Initial system msg + user msg + assistant msg = 3
+    assert len(messages) == 3
+    roles = [m["role"] for m in messages]
+    assert "user" in roles
+    assert roles.count("assistant") == 2  # system prompt + LLM response
+
+
+async def test_send_message_session_not_found(client: AsyncClient, db_session):
+    """POST /api/architect/sessions/{random_id}/message returns 404."""
+    random_id = str(uuid.uuid4())
+    response = await client.post(
+        f"/api/architect/sessions/{random_id}/message",
+        json={"content": "Hello"},
+    )
+    assert response.status_code == 404
+
+
+async def test_send_message_finalized_session(client: AsyncClient, db_session):
+    """POST /api/architect/sessions/{id}/message on finalized session returns 400."""
+    session = await create_session_in_db(db_session)
+
+    # Mark session as finalized
+    session.status = DesignSessionStatus.finalized
+    await db_session.commit()
+
+    response = await client.post(
+        f"/api/architect/sessions/{session.id}/message",
+        json={"content": "Hello"},
+    )
+    assert response.status_code == 400
+    assert "not active" in response.json()["detail"]
+
+
+async def test_send_message_llm_error(client: AsyncClient, db_session):
+    """POST /api/architect/sessions/{id}/message returns 502 on LLM failure."""
+    session_data = await create_session_via_api(client)
+    session_id = session_data["id"]
+
+    with patch("backend.src.api.architect.LLMClient") as MockClient:
+        from backend.src.core.llm_client import LLMError
+
+        instance = MockClient.return_value
+        instance.chat = AsyncMock(side_effect=LLMError("API rate limited"))
+
+        response = await client.post(
+            f"/api/architect/sessions/{session_id}/message",
+            json={"content": "Hello"},
+        )
+
+    assert response.status_code == 502
+    assert "LLM error" in response.json()["detail"]
+
+
+# ── SSE Streaming Message Tests ──────────────────────────────────────
+
+
+async def test_stream_message_success(client: AsyncClient, db_session):
+    """POST /api/architect/sessions/{id}/message/stream returns SSE response."""
+    session_data = await create_session_via_api(client)
+    session_id = session_data["id"]
+
+    async def mock_stream_chat(messages, **kwargs):
+        for chunk in ["Hello", " world", "!"]:
+            yield chunk
+
+    with patch("backend.src.api.architect.LLMClient") as MockClient:
+        instance = MockClient.return_value
+        instance.stream_chat = mock_stream_chat
+
+        response = await client.post(
+            f"/api/architect/sessions/{session_id}/message/stream",
+            json={"content": "Hello"},
+        )
+
+    assert response.status_code == 200
+    assert "text/event-stream" in response.headers.get("content-type", "")
+
+
+async def test_stream_message_session_not_found(client: AsyncClient, db_session):
+    """POST /api/architect/sessions/{random_id}/message/stream returns 404."""
+    random_id = str(uuid.uuid4())
+    response = await client.post(
+        f"/api/architect/sessions/{random_id}/message/stream",
+        json={"content": "Hello"},
+    )
+    assert response.status_code == 404
+
+
+async def test_stream_message_finalized_session(client: AsyncClient, db_session):
+    """POST /api/architect/sessions/{id}/message/stream on finalized session returns 400."""
+    session = await create_session_in_db(db_session)
+    session.status = DesignSessionStatus.finalized
+    await db_session.commit()
+
+    response = await client.post(
+        f"/api/architect/sessions/{session.id}/message/stream",
+        json={"content": "Hello"},
+    )
+    assert response.status_code == 400
+
+
+# ── Finalize Design Tests ────────────────────────────────────────────
+
+
+MOCK_FINALIZE_RESPONSE = {
+    "project_name": "My Project",
+    "project_description": "A test project",
+    "phases": [
+        {
+            "name": "Phase 1: Setup",
+            "description": "Initial setup",
+            "tasks": [
+                {
+                    "title": "Setup environment",
+                    "description": "Configure dev environment",
+                    "priority": "high",
+                    "depends_on_indices": [],
+                    "worker_prompt": "Set up the development environment",
+                    "qa_prompt": "Verify environment is properly configured",
+                },
+                {
+                    "title": "Create database schema",
+                    "description": "Design and create DB schema",
+                    "priority": "high",
+                    "depends_on_indices": [0],
+                    "worker_prompt": "Create the database schema",
+                    "qa_prompt": "Verify schema matches design",
+                },
+            ],
+        },
+        {
+            "name": "Phase 2: Implementation",
+            "description": "Core implementation",
+            "tasks": [
+                {
+                    "title": "Implement API",
+                    "description": "Build the REST API",
+                    "priority": "medium",
+                    "depends_on_indices": [1],
+                    "worker_prompt": "Implement the REST API endpoints",
+                    "qa_prompt": "Verify API endpoints work correctly",
+                },
+            ],
+        },
+    ],
+}
+
+
+async def test_finalize_design_success(client: AsyncClient, db_session):
+    """POST /api/architect/finalize/{id} creates project with phases and tasks."""
+    session_data = await create_session_via_api(client)
+    session_id = session_data["id"]
+
+    with patch("backend.src.api.architect.LLMClient") as MockClient:
+        instance = MockClient.return_value
+        instance.structured_output = AsyncMock(return_value=MOCK_FINALIZE_RESPONSE)
+
+        response = await client.post(
+            f"/api/architect/finalize/{session_id}",
+            json={"repo_path": "/test/repo"},
+        )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["name"] == "My Project"
+    assert data["description"] == "A test project"
+    assert data["repo_path"] == "/test/repo"
+    assert data["status"] == "design"
+    assert len(data["phases"]) == 2
+    assert data["phases"][0]["name"] == "Phase 1: Setup"
+    assert data["phases"][1]["name"] == "Phase 2: Implementation"
+
+    # Verify session is finalized
+    get_resp = await client.get(f"/api/architect/sessions/{session_id}")
+    session = get_resp.json()
+    assert session["status"] == "finalized"
+    assert session["project_id"] == data["id"]
+
+
+async def test_finalize_design_with_pm_config(client: AsyncClient, db_session):
+    """POST /api/architect/finalize/{id} stores pm_llm_config in project."""
+    session_data = await create_session_via_api(client)
+    session_id = session_data["id"]
+
+    with patch("backend.src.api.architect.LLMClient") as MockClient:
+        instance = MockClient.return_value
+        instance.structured_output = AsyncMock(return_value=MOCK_FINALIZE_RESPONSE)
+
+        response = await client.post(
+            f"/api/architect/finalize/{session_id}",
+            json={
+                "repo_path": "/test/repo",
+                "pm_llm_config": {"api_key": "sk-pm-key", "model": "gpt-4o"},
+            },
+        )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["llm_config"]["architect"]["api_key"] == "sk-test-key-1234"
+    assert data["llm_config"]["pm"]["api_key"] == "sk-pm-key"
+    assert data["llm_config"]["pm"]["model"] == "gpt-4o"
+
+
+async def test_finalize_session_not_found(client: AsyncClient, db_session):
+    """POST /api/architect/finalize/{random_id} returns 404."""
+    random_id = str(uuid.uuid4())
+    response = await client.post(
+        f"/api/architect/finalize/{random_id}",
+        json={"repo_path": "/test/repo"},
+    )
+    assert response.status_code == 404
+
+
+async def test_finalize_already_finalized(client: AsyncClient, db_session):
+    """POST /api/architect/finalize/{id} on finalized session returns 400."""
+    session = await create_session_in_db(db_session)
+    session.status = DesignSessionStatus.finalized
+    await db_session.commit()
+
+    response = await client.post(
+        f"/api/architect/finalize/{session.id}",
+        json={"repo_path": "/test/repo"},
+    )
+    assert response.status_code == 400
+    assert "not active" in response.json()["detail"]
+
+
+async def test_finalize_llm_error(client: AsyncClient, db_session):
+    """POST /api/architect/finalize/{id} returns 502 on LLM failure."""
+    session_data = await create_session_via_api(client)
+    session_id = session_data["id"]
+
+    with patch("backend.src.api.architect.LLMClient") as MockClient:
+        from backend.src.core.llm_client import LLMError
+
+        instance = MockClient.return_value
+        instance.structured_output = AsyncMock(side_effect=LLMError("API error"))
+
+        response = await client.post(
+            f"/api/architect/finalize/{session_id}",
+            json={"repo_path": "/test/repo"},
+        )
+
+    assert response.status_code == 502
+
+
+async def test_finalize_creates_task_dependencies(client: AsyncClient, db_session):
+    """POST /api/architect/finalize/{id} correctly wires task dependencies."""
+    session_data = await create_session_via_api(client)
+    session_id = session_data["id"]
+
+    with patch("backend.src.api.architect.LLMClient") as MockClient:
+        instance = MockClient.return_value
+        instance.structured_output = AsyncMock(return_value=MOCK_FINALIZE_RESPONSE)
+
+        response = await client.post(
+            f"/api/architect/finalize/{session_id}",
+            json={"repo_path": "/test/repo"},
+        )
+
+    assert response.status_code == 200
+    data = response.json()
+    project_id = data["id"]
+
+    # Get all tasks for the project
+    tasks_resp = await client.get(f"/api/tasks/by-project/{project_id}")
+    assert tasks_resp.status_code == 200
+    tasks = tasks_resp.json()
+    assert len(tasks) == 3
+
+
+# ── Add Task Tests ───────────────────────────────────────────────────
+
+
+MOCK_ADD_TASK_RESPONSE = {
+    "title": "New Feature Task",
+    "description": "Implement a new feature",
+    "priority": "medium",
+    "worker_prompt": "Implement the new feature following these steps...",
+    "qa_prompt": "Verify the feature works correctly...",
+}
+
+
+async def test_add_task_success(client: AsyncClient, db_session):
+    """POST /api/architect/add-task/{project_id} creates a task."""
+    project, phase = await create_project_with_phase(db_session)
+
+    with patch("backend.src.api.architect.LLMClient") as MockClient:
+        instance = MockClient.return_value
+        instance.structured_output = AsyncMock(return_value=MOCK_ADD_TASK_RESPONSE)
+
+        response = await client.post(
+            f"/api/architect/add-task/{project.id}",
+            json={
+                "phase_id": str(phase.id),
+                "request_text": "Add a user authentication feature",
+            },
+        )
+
+    assert response.status_code == 201
+    data = response.json()
+    assert data["title"] == "New Feature Task"
+    assert data["description"] == "Implement a new feature"
+    assert data["priority"] == "medium"
+    assert data["worker_prompt"] == {"prompt": "Implement the new feature following these steps..."}
+    assert data["qa_prompt"] == {"prompt": "Verify the feature works correctly..."}
+
+
+async def test_add_task_with_llm_override(client: AsyncClient, db_session):
+    """POST /api/architect/add-task/{project_id} uses override llm_config when provided."""
+    project, phase = await create_project_with_phase(db_session)
+
+    with patch("backend.src.api.architect.LLMClient") as MockClient:
+        instance = MockClient.return_value
+        instance.structured_output = AsyncMock(return_value=MOCK_ADD_TASK_RESPONSE)
+
+        response = await client.post(
+            f"/api/architect/add-task/{project.id}",
+            json={
+                "phase_id": str(phase.id),
+                "request_text": "Add a feature",
+                "llm_config": {"api_key": "sk-override-key", "model": "claude-3-opus"},
+            },
+        )
+
+    assert response.status_code == 201
+    # Verify the client was created with the override config
+    MockClient.assert_called_once()
+    call_args = MockClient.call_args[0][0]
+    assert call_args.api_key == "sk-override-key"
+
+
+async def test_add_task_project_not_found(client: AsyncClient, db_session):
+    """POST /api/architect/add-task/{random_id} returns 404."""
+    random_id = str(uuid.uuid4())
+    random_phase_id = str(uuid.uuid4())
+    response = await client.post(
+        f"/api/architect/add-task/{random_id}",
+        json={
+            "phase_id": random_phase_id,
+            "request_text": "Add something",
+        },
+    )
+    assert response.status_code == 404
+    assert "Project not found" in response.json()["detail"]
+
+
+async def test_add_task_phase_not_found(client: AsyncClient, db_session):
+    """POST /api/architect/add-task/{project_id} with invalid phase returns 404."""
+    project, _ = await create_project_with_phase(db_session)
+    random_phase_id = str(uuid.uuid4())
+
+    response = await client.post(
+        f"/api/architect/add-task/{project.id}",
+        json={
+            "phase_id": random_phase_id,
+            "request_text": "Add something",
+        },
+    )
+    assert response.status_code == 404
+    assert "Phase not found" in response.json()["detail"]
+
+
+async def test_add_task_phase_wrong_project(client: AsyncClient, db_session):
+    """POST /api/architect/add-task/{project_id} with phase from another project returns 400."""
+    project1, _ = await create_project_with_phase(db_session)
+
+    # Create another project with its own phase
+    now = datetime.now(timezone.utc)
+    project2 = Project(
+        id=uuid.uuid4(),
+        name="Other Project",
+        description="Other description",
+        repo_path="/other/repo",
+        status=ProjectStatus.active,
+        llm_config={"architect": LLM_CONFIG},
+        created_at=now,
+        updated_at=now,
+    )
+    db_session.add(project2)
+    phase2 = Phase(
+        id=uuid.uuid4(),
+        project_id=project2.id,
+        name="Other Phase",
+        branch_name="phase/other",
+        order=1,
+        status=PhaseStatus.active,
+        created_at=now,
+        updated_at=now,
+    )
+    db_session.add(phase2)
+    await db_session.commit()
+
+    response = await client.post(
+        f"/api/architect/add-task/{project1.id}",
+        json={
+            "phase_id": str(phase2.id),
+            "request_text": "Add something",
+        },
+    )
+    assert response.status_code == 400
+    assert "does not belong" in response.json()["detail"]
+
+
+async def test_add_task_no_llm_config(client: AsyncClient, db_session):
+    """POST /api/architect/add-task/{project_id} without any LLM config returns 400."""
+    now = datetime.now(timezone.utc)
+    project = Project(
+        id=uuid.uuid4(),
+        name="No Config Project",
+        description="No LLM config",
+        repo_path="/test/repo",
+        status=ProjectStatus.active,
+        llm_config=None,
+        created_at=now,
+        updated_at=now,
+    )
+    db_session.add(project)
+    phase = Phase(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        name="Phase 1",
+        branch_name="phase/phase-1",
+        order=1,
+        status=PhaseStatus.active,
+        created_at=now,
+        updated_at=now,
+    )
+    db_session.add(phase)
+    await db_session.commit()
+
+    response = await client.post(
+        f"/api/architect/add-task/{project.id}",
+        json={
+            "phase_id": str(phase.id),
+            "request_text": "Add something",
+        },
+    )
+    assert response.status_code == 400
+    assert "No LLM configuration" in response.json()["detail"]
+
+
+async def test_add_task_llm_error(client: AsyncClient, db_session):
+    """POST /api/architect/add-task/{project_id} returns 502 on LLM failure."""
+    project, phase = await create_project_with_phase(db_session)
+
+    with patch("backend.src.api.architect.LLMClient") as MockClient:
+        from backend.src.core.llm_client import LLMError
+
+        instance = MockClient.return_value
+        instance.structured_output = AsyncMock(side_effect=LLMError("API error"))
+
+        response = await client.post(
+            f"/api/architect/add-task/{project.id}",
+            json={
+                "phase_id": str(phase.id),
+                "request_text": "Add something",
+            },
+        )
+
+    assert response.status_code == 502
+
+
+# ── WebSocket Tests ──────────────────────────────────────────────────
+
+
+async def test_websocket_session_not_found(client: AsyncClient, db_session):
+    """WS /ws/architect/{random_id} sends error and closes when session not found."""
+    from starlette.testclient import TestClient
+    from backend.src.main import app
+
+    # Use synchronous TestClient for WebSocket testing
+    with TestClient(app) as sync_client:
+        random_id = str(uuid.uuid4())
+        with sync_client.websocket_connect(f"/ws/architect/{random_id}") as ws:
+            data = ws.receive_json()
+            assert data["type"] == "error"
+            assert "Session not found" in data["content"]
+
+
+# ══════════════════════════════════════════════════════════════════════
+# DIRECT UNIT TESTS — bypass ASGI transport for coverage.py tracing
+# ══════════════════════════════════════════════════════════════════════
+
+
+# ── _slugify ─────────────────────────────────────────────────────────
+
+
+class TestSlugifyDirect:
+    """Direct tests for the _slugify helper."""
+
+    def test_simple_string(self):
+        from backend.src.api.architect import _slugify
+        assert _slugify("Hello World") == "hello-world"
+
+    def test_special_characters(self):
+        from backend.src.api.architect import _slugify
+        assert _slugify("Phase 1: Setup & Config!") == "phase-1-setup-config"
+
+    def test_unicode_characters(self):
+        from backend.src.api.architect import _slugify
+        assert _slugify("Deja vu") == "deja-vu"
+
+    def test_multiple_spaces_and_dashes(self):
+        from backend.src.api.architect import _slugify
+        assert _slugify("hello   ---   world") == "hello-world"
+
+    def test_leading_trailing_dashes(self):
+        from backend.src.api.architect import _slugify
+        assert _slugify("---hello---") == "hello"
+
+    def test_empty_string(self):
+        from backend.src.api.architect import _slugify
+        assert _slugify("") == ""
+
+    def test_only_special_characters(self):
+        from backend.src.api.architect import _slugify
+        assert _slugify("!@#$%") == ""
+
+    def test_already_slug(self):
+        from backend.src.api.architect import _slugify
+        assert _slugify("already-a-slug") == "already-a-slug"
+
+    def test_uppercase(self):
+        from backend.src.api.architect import _slugify
+        assert _slugify("UPPERCASE STRING") == "uppercase-string"
+
+    def test_accented_characters(self):
+        from backend.src.api.architect import _slugify
+        result = _slugify("caf\u00e9 na\u00efve r\u00e9sum\u00e9")
+        assert result == "cafe-naive-resume"
+
+
+# ── _build_llm_config ────────────────────────────────────────────────
+
+
+class TestBuildLLMConfigDirect:
+    """Direct tests for the _build_llm_config helper."""
+
+    def test_full_config(self):
+        from backend.src.api.architect import _build_llm_config
+        config = _build_llm_config({
+            "api_key": "sk-test",
+            "model": "gpt-4o",
+            "base_url": "https://custom.api",
+        })
+        assert config.api_key == "sk-test"
+        assert config.model == "gpt-4o"
+        assert config.base_url == "https://custom.api"
+
+    def test_minimal_config(self):
+        from backend.src.api.architect import _build_llm_config
+        config = _build_llm_config({"api_key": "sk-test"})
+        assert config.api_key == "sk-test"
+        assert config.model == "anthropic/claude-sonnet-4-20250514"
+        assert config.base_url is None
+
+    def test_empty_model_falls_back_to_default(self):
+        from backend.src.api.architect import _build_llm_config
+        config = _build_llm_config({"api_key": "sk-test", "model": ""})
+        assert config.model == "anthropic/claude-sonnet-4-20250514"
+
+    def test_none_model_falls_back_to_default(self):
+        from backend.src.api.architect import _build_llm_config
+        config = _build_llm_config({"api_key": "sk-test", "model": None})
+        assert config.model == "anthropic/claude-sonnet-4-20250514"
+
+    def test_base_url_none(self):
+        from backend.src.api.architect import _build_llm_config
+        config = _build_llm_config({"api_key": "sk-test", "base_url": None})
+        assert config.base_url is None
+
+
+# ── _build_message_history ───────────────────────────────────────────
+
+
+class TestBuildMessageHistoryDirect:
+    """Direct tests for the _build_message_history helper."""
+
+    def test_with_messages(self):
+        from backend.src.api.architect import _build_message_history
+
+        now = datetime.now(timezone.utc)
+        session = MagicMock()
+        msg1 = MagicMock()
+        msg1.role = MessageRole.assistant
+        msg1.content = "Hello"
+        msg1.created_at = now
+
+        msg2 = MagicMock()
+        msg2.role = MessageRole.user
+        msg2.content = "Help me"
+        msg2.created_at = datetime(2099, 1, 2, tzinfo=timezone.utc)
+
+        session.messages = [msg2, msg1]  # intentionally reversed to test sorting
+
+        result = _build_message_history(session)
+        assert len(result) == 2
+        # Should be sorted by created_at: msg1 first, msg2 second
+        assert result[0] == {"role": "assistant", "content": "Hello"}
+        assert result[1] == {"role": "user", "content": "Help me"}
+
+    def test_with_empty_messages(self):
+        from backend.src.api.architect import _build_message_history
+        session = MagicMock()
+        session.messages = []
+        result = _build_message_history(session)
+        assert result == []
+
+    def test_with_string_role(self):
+        from backend.src.api.architect import _build_message_history
+        session = MagicMock()
+        msg = MagicMock()
+        msg.role = "user"  # plain string, no .value attr
+        msg.content = "Test"
+        msg.created_at = datetime.now(timezone.utc)
+        session.messages = [msg]
+        result = _build_message_history(session)
+        assert result[0]["role"] == "user"
+
+
+# ── create_session (direct call) ─────────────────────────────────────
+
+
+class TestCreateSessionDirect:
+    """Direct tests for create_session endpoint function."""
+
+    async def test_create_session_with_full_config(self, db_session):
+        from backend.src.api.architect import create_session
+        from backend.src import schemas
+
+        body = schemas.CreateSessionRequest(
+            llm_config=schemas.LLMConfigInput(api_key="sk-direct", model="gpt-4o", base_url="https://api.test")
+        )
+        result = await create_session(body=body, db=db_session)
+        assert result.status == schemas.DesignSessionStatus.active
+        assert result.project_id is None
+        assert len(result.messages) == 1
+        assert result.messages[0].role == schemas.MessageRole.assistant
+
+    async def test_create_session_minimal_config(self, db_session):
+        from backend.src.api.architect import create_session
+        from backend.src import schemas
+
+        body = schemas.CreateSessionRequest(
+            llm_config=schemas.LLMConfigInput(api_key="sk-min")
+        )
+        result = await create_session(body=body, db=db_session)
+        assert result.status == schemas.DesignSessionStatus.active
+        assert len(result.messages) == 1
+
+
+# ── get_session (direct call) ────────────────────────────────────────
+
+
+class TestGetSessionDirect:
+    """Direct tests for get_session endpoint function."""
+
+    async def test_get_existing_session(self, db_session):
+        from backend.src.api.architect import get_session
+        session = await create_session_in_db(db_session)
+        result = await get_session(session_id=session.id, db=db_session)
+        assert result.id == session.id
+        assert result.status.value == "active"
+
+    async def test_get_nonexistent_session(self, db_session):
+        from backend.src.api.architect import get_session
+        with pytest.raises(HTTPException) as exc_info:
+            await get_session(session_id=uuid.uuid4(), db=db_session)
+        assert exc_info.value.status_code == 404
+
+
+# ── send_message (direct call) ───────────────────────────────────────
+
+
+class TestSendMessageDirect:
+    """Direct tests for send_message endpoint function."""
+
+    async def test_send_message_success(self, db_session):
+        from backend.src.api.architect import send_message
+        from backend.src import schemas
+
+        session = await create_session_in_db(db_session)
+        body = schemas.MessageRequest(content="Help me design an API")
+
+        with patch("backend.src.api.architect.LLMClient") as MockClient:
+            instance = MockClient.return_value
+            instance.chat = AsyncMock(return_value="Sure, I can help!")
+
+            result = await send_message(session_id=session.id, body=body, db=db_session)
+
+        assert result.role == schemas.MessageRole.assistant
+        assert result.content == "Sure, I can help!"
+        assert result.session_id == session.id
+
+    async def test_send_message_finalized_session(self, db_session):
+        from backend.src.api.architect import send_message
+        from backend.src import schemas
+
+        session = await create_session_in_db(db_session)
+        session.status = DesignSessionStatus.finalized
+        await db_session.commit()
+
+        body = schemas.MessageRequest(content="Hello")
+
+        with pytest.raises(HTTPException) as exc_info:
+            await send_message(session_id=session.id, body=body, db=db_session)
+        assert exc_info.value.status_code == 400
+        assert "not active" in exc_info.value.detail
+
+    async def test_send_message_session_not_found(self, db_session):
+        from backend.src.api.architect import send_message
+        from backend.src import schemas
+
+        body = schemas.MessageRequest(content="Hello")
+        with pytest.raises(HTTPException) as exc_info:
+            await send_message(session_id=uuid.uuid4(), body=body, db=db_session)
+        assert exc_info.value.status_code == 404
+
+    async def test_send_message_llm_error(self, db_session):
+        from backend.src.api.architect import send_message
+        from backend.src import schemas
+        from backend.src.core.llm_client import LLMError
+
+        session = await create_session_in_db(db_session)
+        body = schemas.MessageRequest(content="Hello")
+
+        with patch("backend.src.api.architect.LLMClient") as MockClient:
+            instance = MockClient.return_value
+            instance.chat = AsyncMock(side_effect=LLMError("Rate limited"))
+
+            with pytest.raises(HTTPException) as exc_info:
+                await send_message(session_id=session.id, body=body, db=db_session)
+            assert exc_info.value.status_code == 502
+            assert "LLM error" in exc_info.value.detail
+
+
+# ── send_message_stream (direct call) ────────────────────────────────
+
+
+class TestSendMessageStreamDirect:
+    """Direct tests for send_message_stream endpoint function."""
+
+    async def test_stream_message_returns_event_source_response(self, db_session):
+        from backend.src.api.architect import send_message_stream
+        from backend.src import schemas
+
+        session = await create_session_in_db(db_session)
+        body = schemas.MessageRequest(content="Hello")
+
+        async def mock_stream_chat(messages, **kwargs):
+            for chunk in ["Hello", " world"]:
+                yield chunk
+
+        with patch("backend.src.api.architect.LLMClient") as MockClient:
+            instance = MockClient.return_value
+            instance.stream_chat = mock_stream_chat
+
+            result = await send_message_stream(session_id=session.id, body=body, db=db_session)
+
+        # EventSourceResponse is returned
+        from sse_starlette.sse import EventSourceResponse
+        assert isinstance(result, EventSourceResponse)
+
+    async def test_stream_message_finalized_session(self, db_session):
+        from backend.src.api.architect import send_message_stream
+        from backend.src import schemas
+
+        session = await create_session_in_db(db_session)
+        session.status = DesignSessionStatus.finalized
+        await db_session.commit()
+
+        body = schemas.MessageRequest(content="Hello")
+
+        with pytest.raises(HTTPException) as exc_info:
+            await send_message_stream(session_id=session.id, body=body, db=db_session)
+        assert exc_info.value.status_code == 400
+
+    async def test_stream_message_session_not_found(self, db_session):
+        from backend.src.api.architect import send_message_stream
+        from backend.src import schemas
+
+        body = schemas.MessageRequest(content="Hello")
+        with pytest.raises(HTTPException) as exc_info:
+            await send_message_stream(session_id=uuid.uuid4(), body=body, db=db_session)
+        assert exc_info.value.status_code == 404
+
+    async def test_stream_event_generator_chunks(self, db_session):
+        """Test the event generator yields chunk and done events."""
+        from backend.src.api.architect import send_message_stream
+        from backend.src import schemas
+
+        session = await create_session_in_db(db_session)
+        body = schemas.MessageRequest(content="Hello")
+
+        chunks_received = []
+
+        async def mock_stream_chat(messages, **kwargs):
+            for chunk in ["A", "B", "C"]:
+                yield chunk
+
+        with patch("backend.src.api.architect.LLMClient") as MockClient:
+            instance = MockClient.return_value
+            instance.stream_chat = mock_stream_chat
+
+            sse_response = await send_message_stream(session_id=session.id, body=body, db=db_session)
+
+            # Iterate the generator to collect events
+            async for event in sse_response.body_iterator:
+                chunks_received.append(event)
+
+        # The generator should have produced chunk events and a done event
+        assert len(chunks_received) > 0
+
+    async def test_stream_event_generator_llm_error(self, db_session):
+        """Test the event generator handles LLM errors gracefully."""
+        from backend.src.api.architect import send_message_stream
+        from backend.src import schemas
+        from backend.src.core.llm_client import LLMError
+
+        session = await create_session_in_db(db_session)
+        body = schemas.MessageRequest(content="Hello")
+
+        async def mock_stream_chat_error(messages, **kwargs):
+            raise LLMError("Stream failed")
+            yield  # make it a generator  # noqa: E501
+
+        with patch("backend.src.api.architect.LLMClient") as MockClient:
+            instance = MockClient.return_value
+            instance.stream_chat = mock_stream_chat_error
+
+            sse_response = await send_message_stream(session_id=session.id, body=body, db=db_session)
+
+            events = []
+            async for event in sse_response.body_iterator:
+                events.append(event)
+
+        # Should have yielded an error event
+        assert len(events) > 0
+
+
+# ── finalize_design (direct call) ────────────────────────────────────
+
+
+class TestFinalizeDesignDirect:
+    """Direct tests for finalize_design endpoint function."""
+
+    async def test_finalize_success(self, db_session):
+        from backend.src.api.architect import finalize_design
+        from backend.src import schemas
+
+        session = await create_session_in_db(db_session)
+        body = schemas.FinalizeRequest(repo_path="/test/repo")
+
+        with patch("backend.src.api.architect.LLMClient") as MockClient:
+            instance = MockClient.return_value
+            instance.structured_output = AsyncMock(return_value=MOCK_FINALIZE_RESPONSE)
+
+            result = await finalize_design(session_id=session.id, body=body, db=db_session)
+
+        assert result.name == "My Project"
+        assert result.description == "A test project"
+        assert result.repo_path == "/test/repo"
+        assert result.status == schemas.ProjectStatus.design
+        assert len(result.phases) == 2
+
+    async def test_finalize_with_pm_config(self, db_session):
+        from backend.src.api.architect import finalize_design
+        from backend.src import schemas
+
+        session = await create_session_in_db(db_session)
+        body = schemas.FinalizeRequest(
+            repo_path="/test/repo",
+            pm_llm_config=schemas.LLMConfigInput(
+                api_key="sk-pm", model="gpt-4o", base_url="https://pm.api"
+            ),
+        )
+
+        with patch("backend.src.api.architect.LLMClient") as MockClient:
+            instance = MockClient.return_value
+            instance.structured_output = AsyncMock(return_value=MOCK_FINALIZE_RESPONSE)
+
+            result = await finalize_design(session_id=session.id, body=body, db=db_session)
+
+        assert result.llm_config["pm"]["api_key"] == "sk-pm"
+        assert result.llm_config["pm"]["model"] == "gpt-4o"
+        assert result.llm_config["pm"]["base_url"] == "https://pm.api"
+
+    async def test_finalize_finalized_session(self, db_session):
+        from backend.src.api.architect import finalize_design
+        from backend.src import schemas
+
+        session = await create_session_in_db(db_session)
+        session.status = DesignSessionStatus.finalized
+        await db_session.commit()
+
+        body = schemas.FinalizeRequest(repo_path="/test/repo")
+
+        with pytest.raises(HTTPException) as exc_info:
+            await finalize_design(session_id=session.id, body=body, db=db_session)
+        assert exc_info.value.status_code == 400
+
+    async def test_finalize_session_not_found(self, db_session):
+        from backend.src.api.architect import finalize_design
+        from backend.src import schemas
+
+        body = schemas.FinalizeRequest(repo_path="/test/repo")
+        with pytest.raises(HTTPException) as exc_info:
+            await finalize_design(session_id=uuid.uuid4(), body=body, db=db_session)
+        assert exc_info.value.status_code == 404
+
+    async def test_finalize_llm_error(self, db_session):
+        from backend.src.api.architect import finalize_design
+        from backend.src import schemas
+        from backend.src.core.llm_client import LLMError
+
+        session = await create_session_in_db(db_session)
+        body = schemas.FinalizeRequest(repo_path="/test/repo")
+
+        with patch("backend.src.api.architect.LLMClient") as MockClient:
+            instance = MockClient.return_value
+            instance.structured_output = AsyncMock(side_effect=LLMError("API error"))
+
+            with pytest.raises(HTTPException) as exc_info:
+                await finalize_design(session_id=session.id, body=body, db=db_session)
+            assert exc_info.value.status_code == 502
+
+    async def test_finalize_with_invalid_priority(self, db_session):
+        """Finalize handles unknown priority gracefully (falls back to medium)."""
+        from backend.src.api.architect import finalize_design
+        from backend.src import schemas
+
+        session = await create_session_in_db(db_session)
+        body = schemas.FinalizeRequest(repo_path="/test/repo")
+
+        response_with_bad_priority = {
+            "project_name": "Bad Priority Project",
+            "project_description": "Test",
+            "phases": [
+                {
+                    "name": "Phase 1",
+                    "description": "Test phase",
+                    "tasks": [
+                        {
+                            "title": "Task with bad priority",
+                            "description": "Test",
+                            "priority": "ultra-mega-critical",
+                            "depends_on_indices": [],
+                            "worker_prompt": "Do something",
+                            "qa_prompt": "Check something",
+                        }
+                    ],
+                }
+            ],
+        }
+
+        with patch("backend.src.api.architect.LLMClient") as MockClient:
+            instance = MockClient.return_value
+            instance.structured_output = AsyncMock(return_value=response_with_bad_priority)
+
+            result = await finalize_design(session_id=session.id, body=body, db=db_session)
+
+        assert result.name == "Bad Priority Project"
+        assert len(result.phases) == 1
+
+    async def test_finalize_with_pm_config_no_model_no_base_url(self, db_session):
+        """Finalize with pm_llm_config that has no model or base_url."""
+        from backend.src.api.architect import finalize_design
+        from backend.src import schemas
+
+        session = await create_session_in_db(db_session)
+        body = schemas.FinalizeRequest(
+            repo_path="/test/repo",
+            pm_llm_config=schemas.LLMConfigInput(api_key="sk-pm-only"),
+        )
+
+        with patch("backend.src.api.architect.LLMClient") as MockClient:
+            instance = MockClient.return_value
+            instance.structured_output = AsyncMock(return_value=MOCK_FINALIZE_RESPONSE)
+
+            result = await finalize_design(session_id=session.id, body=body, db=db_session)
+
+        assert result.llm_config["pm"]["api_key"] == "sk-pm-only"
+        assert "model" not in result.llm_config["pm"]
+        assert "base_url" not in result.llm_config["pm"]
+
+    async def test_finalize_empty_phases(self, db_session):
+        """Finalize with empty phases list still succeeds."""
+        from backend.src.api.architect import finalize_design
+        from backend.src import schemas
+
+        session = await create_session_in_db(db_session)
+        body = schemas.FinalizeRequest(repo_path="/test/repo")
+
+        empty_response = {
+            "project_name": "Empty Project",
+            "project_description": "No phases",
+            "phases": [],
+        }
+
+        with patch("backend.src.api.architect.LLMClient") as MockClient:
+            instance = MockClient.return_value
+            instance.structured_output = AsyncMock(return_value=empty_response)
+
+            result = await finalize_design(session_id=session.id, body=body, db=db_session)
+
+        assert result.name == "Empty Project"
+        assert len(result.phases) == 0
+
+    async def test_finalize_with_out_of_range_dependency_index(self, db_session):
+        """Finalize ignores out-of-range depends_on_indices."""
+        from backend.src.api.architect import finalize_design
+        from backend.src import schemas
+
+        session = await create_session_in_db(db_session)
+        body = schemas.FinalizeRequest(repo_path="/test/repo")
+
+        response_with_bad_dep = {
+            "project_name": "Bad Dep Project",
+            "project_description": "Test",
+            "phases": [
+                {
+                    "name": "Phase 1",
+                    "description": "Test",
+                    "tasks": [
+                        {
+                            "title": "Task 1",
+                            "description": "First task",
+                            "priority": "high",
+                            "depends_on_indices": [99],  # out of range
+                            "worker_prompt": "Do something",
+                            "qa_prompt": "Check something",
+                        }
+                    ],
+                }
+            ],
+        }
+
+        with patch("backend.src.api.architect.LLMClient") as MockClient:
+            instance = MockClient.return_value
+            instance.structured_output = AsyncMock(return_value=response_with_bad_dep)
+
+            result = await finalize_design(session_id=session.id, body=body, db=db_session)
+
+        assert result.name == "Bad Dep Project"
+        assert len(result.phases) == 1
+
+    async def test_finalize_with_missing_fields_in_response(self, db_session):
+        """Finalize uses defaults when fields are missing from LLM response."""
+        from backend.src.api.architect import finalize_design
+        from backend.src import schemas
+
+        session = await create_session_in_db(db_session)
+        body = schemas.FinalizeRequest(repo_path="/test/repo")
+
+        minimal_response = {
+            "phases": [
+                {
+                    "tasks": [
+                        {
+                            "depends_on_indices": [],
+                        }
+                    ],
+                }
+            ],
+        }
+
+        with patch("backend.src.api.architect.LLMClient") as MockClient:
+            instance = MockClient.return_value
+            instance.structured_output = AsyncMock(return_value=minimal_response)
+
+            result = await finalize_design(session_id=session.id, body=body, db=db_session)
+
+        assert result.name == "Untitled Project"
+        assert result.description == ""
+
+
+# ── add_task (direct call) ───────────────────────────────────────────
+
+
+class TestAddTaskDirect:
+    """Direct tests for add_task endpoint function."""
+
+    async def test_add_task_success(self, db_session):
+        from backend.src.api.architect import add_task
+        from backend.src import schemas
+
+        project, phase = await create_project_with_phase(db_session)
+        body = schemas.AddTaskRequest(
+            phase_id=phase.id,
+            request_text="Add a user authentication feature",
+        )
+
+        with patch("backend.src.api.architect.LLMClient") as MockClient:
+            instance = MockClient.return_value
+            instance.structured_output = AsyncMock(return_value=MOCK_ADD_TASK_RESPONSE)
+
+            result = await add_task(project_id=project.id, body=body, db=db_session)
+
+        assert result.title == "New Feature Task"
+        assert result.description == "Implement a new feature"
+        assert result.priority == schemas.TaskPriority.medium
+
+    async def test_add_task_with_llm_override(self, db_session):
+        from backend.src.api.architect import add_task
+        from backend.src import schemas
+
+        project, phase = await create_project_with_phase(db_session)
+        body = schemas.AddTaskRequest(
+            phase_id=phase.id,
+            request_text="Add a feature",
+            llm_config=schemas.LLMConfigInput(
+                api_key="sk-override", model="gpt-4o", base_url="https://override.api"
+            ),
+        )
+
+        with patch("backend.src.api.architect.LLMClient") as MockClient:
+            instance = MockClient.return_value
+            instance.structured_output = AsyncMock(return_value=MOCK_ADD_TASK_RESPONSE)
+
+            result = await add_task(project_id=project.id, body=body, db=db_session)
+
+        assert result.title == "New Feature Task"
+        # Verify the config was created with override values
+        call_args = MockClient.call_args[0][0]
+        assert call_args.api_key == "sk-override"
+        assert call_args.model == "gpt-4o"
+        assert call_args.base_url == "https://override.api"
+
+    async def test_add_task_project_not_found(self, db_session):
+        from backend.src.api.architect import add_task
+        from backend.src import schemas
+
+        body = schemas.AddTaskRequest(
+            phase_id=uuid.uuid4(),
+            request_text="Add something",
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            await add_task(project_id=uuid.uuid4(), body=body, db=db_session)
+        assert exc_info.value.status_code == 404
+        assert "Project not found" in exc_info.value.detail
+
+    async def test_add_task_phase_not_found(self, db_session):
+        from backend.src.api.architect import add_task
+        from backend.src import schemas
+
+        project, _ = await create_project_with_phase(db_session)
+        body = schemas.AddTaskRequest(
+            phase_id=uuid.uuid4(),
+            request_text="Add something",
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            await add_task(project_id=project.id, body=body, db=db_session)
+        assert exc_info.value.status_code == 404
+        assert "Phase not found" in exc_info.value.detail
+
+    async def test_add_task_phase_wrong_project(self, db_session):
+        from backend.src.api.architect import add_task
+        from backend.src import schemas
+
+        project1, _ = await create_project_with_phase(db_session)
+        _, phase2 = await create_project_with_phase(db_session)
+
+        body = schemas.AddTaskRequest(
+            phase_id=phase2.id,
+            request_text="Add something",
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            await add_task(project_id=project1.id, body=body, db=db_session)
+        assert exc_info.value.status_code == 400
+        assert "does not belong" in exc_info.value.detail
+
+    async def test_add_task_no_llm_config(self, db_session):
+        from backend.src.api.architect import add_task
+        from backend.src import schemas
+
+        now = datetime.now(timezone.utc)
+        project = Project(
+            id=uuid.uuid4(),
+            name="No Config",
+            description="No LLM config",
+            repo_path="/test/repo",
+            status=ProjectStatus.active,
+            llm_config=None,
+            created_at=now,
+            updated_at=now,
+        )
+        db_session.add(project)
+        phase = Phase(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            name="Phase 1",
+            branch_name="phase/phase-1",
+            order=1,
+            status=PhaseStatus.active,
+            created_at=now,
+            updated_at=now,
+        )
+        db_session.add(phase)
+        await db_session.commit()
+
+        body = schemas.AddTaskRequest(
+            phase_id=phase.id,
+            request_text="Add something",
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            await add_task(project_id=project.id, body=body, db=db_session)
+        assert exc_info.value.status_code == 400
+        assert "No LLM configuration" in exc_info.value.detail
+
+    async def test_add_task_llm_error(self, db_session):
+        from backend.src.api.architect import add_task
+        from backend.src import schemas
+        from backend.src.core.llm_client import LLMError
+
+        project, phase = await create_project_with_phase(db_session)
+        body = schemas.AddTaskRequest(
+            phase_id=phase.id,
+            request_text="Add something",
+        )
+
+        with patch("backend.src.api.architect.LLMClient") as MockClient:
+            instance = MockClient.return_value
+            instance.structured_output = AsyncMock(side_effect=LLMError("API error"))
+
+            with pytest.raises(HTTPException) as exc_info:
+                await add_task(project_id=project.id, body=body, db=db_session)
+            assert exc_info.value.status_code == 502
+
+    async def test_add_task_with_invalid_priority(self, db_session):
+        """add_task handles unknown priority from LLM (falls back to medium)."""
+        from backend.src.api.architect import add_task
+        from backend.src import schemas
+
+        project, phase = await create_project_with_phase(db_session)
+        body = schemas.AddTaskRequest(
+            phase_id=phase.id,
+            request_text="Add a feature",
+        )
+
+        bad_priority_response = {
+            "title": "Task with bad priority",
+            "description": "Test",
+            "priority": "not-a-real-priority",
+            "worker_prompt": "Do something",
+            "qa_prompt": "Check something",
+        }
+
+        with patch("backend.src.api.architect.LLMClient") as MockClient:
+            instance = MockClient.return_value
+            instance.structured_output = AsyncMock(return_value=bad_priority_response)
+
+            result = await add_task(project_id=project.id, body=body, db=db_session)
+
+        assert result.priority == schemas.TaskPriority.medium
+
+    async def test_add_task_uses_project_llm_config(self, db_session):
+        """add_task falls back to project architect LLM config when no override."""
+        from backend.src.api.architect import add_task
+        from backend.src import schemas
+
+        project, phase = await create_project_with_phase(db_session)
+        body = schemas.AddTaskRequest(
+            phase_id=phase.id,
+            request_text="Add a feature",
+            # No llm_config override, so it uses project.llm_config["architect"]
+        )
+
+        with patch("backend.src.api.architect.LLMClient") as MockClient:
+            instance = MockClient.return_value
+            instance.structured_output = AsyncMock(return_value=MOCK_ADD_TASK_RESPONSE)
+
+            result = await add_task(project_id=project.id, body=body, db=db_session)
+
+        assert result.title == "New Feature Task"
+        # Should have used the project's architect config
+        call_args = MockClient.call_args[0][0]
+        assert call_args.api_key == "sk-test-key-1234"
+
+    async def test_add_task_llm_config_without_api_key(self, db_session):
+        """add_task fails when project llm_config has architect but no api_key."""
+        from backend.src.api.architect import add_task
+        from backend.src import schemas
+
+        now = datetime.now(timezone.utc)
+        project = Project(
+            id=uuid.uuid4(),
+            name="No API Key Project",
+            description="Config without api_key",
+            repo_path="/test/repo",
+            status=ProjectStatus.active,
+            llm_config={"architect": {"model": "gpt-4o"}},  # no api_key
+            created_at=now,
+            updated_at=now,
+        )
+        db_session.add(project)
+        phase = Phase(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            name="Phase 1",
+            branch_name="phase/phase-1",
+            order=1,
+            status=PhaseStatus.active,
+            created_at=now,
+            updated_at=now,
+        )
+        db_session.add(phase)
+        await db_session.commit()
+
+        body = schemas.AddTaskRequest(
+            phase_id=phase.id,
+            request_text="Add something",
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            await add_task(project_id=project.id, body=body, db=db_session)
+        assert exc_info.value.status_code == 400
+        assert "No LLM configuration" in exc_info.value.detail
+
+
+# ── architect_websocket (direct call) ────────────────────────────────
+
+
+class TestArchitectWebSocketDirect:
+    """Direct tests for architect_websocket function."""
+
+    async def test_websocket_session_not_found(self, db_session):
+        from backend.src.api.architect import architect_websocket
+
+        ws = AsyncMock()
+        ws.accept = AsyncMock()
+        ws.send_json = AsyncMock()
+        ws.close = AsyncMock()
+
+        await architect_websocket(ws, uuid.uuid4(), db_session)
+
+        ws.accept.assert_called_once()
+        ws.send_json.assert_called_once()
+        call_args = ws.send_json.call_args[0][0]
+        assert call_args["type"] == "error"
+        assert "Session not found" in call_args["content"]
+        ws.close.assert_called_once()
+
+    async def test_websocket_send_message(self, db_session):
+        from backend.src.api.architect import architect_websocket
+
+        session = await create_session_in_db(db_session)
+
+        ws = AsyncMock()
+        ws.accept = AsyncMock()
+        ws.send_json = AsyncMock()
+        call_count = 0
+
+        async def receive_json_side_effect():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return {"type": "message", "content": "Hello architect"}
+            raise WebSocketDisconnect()
+
+        ws.receive_json = AsyncMock(side_effect=receive_json_side_effect)
+
+        async def mock_stream_chat(messages, **kwargs):
+            for chunk in ["Hi", " there"]:
+                yield chunk
+
+        with patch("backend.src.api.architect.LLMClient") as MockClient:
+            instance = MockClient.return_value
+            instance.stream_chat = mock_stream_chat
+
+            await architect_websocket(ws, session.id, db_session)
+
+        ws.accept.assert_called_once()
+        # Should have sent chunk events and a done event
+        send_calls = ws.send_json.call_args_list
+        assert len(send_calls) >= 3  # at least 2 chunks + 1 done
+        # Last call should be "done"
+        last_call = send_calls[-1][0][0]
+        assert last_call["type"] == "done"
+        assert last_call["content"] == "Hi there"
+
+    async def test_websocket_unknown_message_type(self, db_session):
+        from backend.src.api.architect import architect_websocket
+
+        session = await create_session_in_db(db_session)
+
+        ws = AsyncMock()
+        ws.accept = AsyncMock()
+        ws.send_json = AsyncMock()
+        call_count = 0
+
+        async def receive_json_side_effect():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return {"type": "unknown"}
+            raise WebSocketDisconnect()
+
+        ws.receive_json = AsyncMock(side_effect=receive_json_side_effect)
+
+        await architect_websocket(ws, session.id, db_session)
+
+        ws.accept.assert_called_once()
+        # Should have sent error about unknown type
+        ws.send_json.assert_called_once()
+        call_args = ws.send_json.call_args[0][0]
+        assert call_args["type"] == "error"
+        assert "Unknown message type" in call_args["content"]
+
+    async def test_websocket_empty_message(self, db_session):
+        from backend.src.api.architect import architect_websocket
+
+        session = await create_session_in_db(db_session)
+
+        ws = AsyncMock()
+        ws.accept = AsyncMock()
+        ws.send_json = AsyncMock()
+        call_count = 0
+
+        async def receive_json_side_effect():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return {"type": "message", "content": ""}
+            raise WebSocketDisconnect()
+
+        ws.receive_json = AsyncMock(side_effect=receive_json_side_effect)
+
+        await architect_websocket(ws, session.id, db_session)
+
+        ws.accept.assert_called_once()
+        ws.send_json.assert_called_once()
+        call_args = ws.send_json.call_args[0][0]
+        assert call_args["type"] == "error"
+        assert "Empty message" in call_args["content"]
+
+    async def test_websocket_llm_error(self, db_session):
+        from backend.src.api.architect import architect_websocket
+        from backend.src.core.llm_client import LLMError
+
+        session = await create_session_in_db(db_session)
+
+        ws = AsyncMock()
+        ws.accept = AsyncMock()
+        ws.send_json = AsyncMock()
+        call_count = 0
+
+        async def receive_json_side_effect():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return {"type": "message", "content": "Hello"}
+            raise WebSocketDisconnect()
+
+        ws.receive_json = AsyncMock(side_effect=receive_json_side_effect)
+
+        async def mock_stream_chat_error(messages, **kwargs):
+            raise LLMError("Stream failed")
+            yield  # make it a generator  # noqa: E501
+
+        with patch("backend.src.api.architect.LLMClient") as MockClient:
+            instance = MockClient.return_value
+            instance.stream_chat = mock_stream_chat_error
+
+            await architect_websocket(ws, session.id, db_session)
+
+        ws.accept.assert_called_once()
+        # Should have sent an error event
+        error_calls = [c for c in ws.send_json.call_args_list if c[0][0].get("type") == "error"]
+        assert len(error_calls) >= 1
+        assert "Stream failed" in error_calls[0][0][0]["content"]
+
+    async def test_websocket_message_without_content_key(self, db_session):
+        """WebSocket message with type=message but no content key uses empty string."""
+        from backend.src.api.architect import architect_websocket
+
+        session = await create_session_in_db(db_session)
+
+        ws = AsyncMock()
+        ws.accept = AsyncMock()
+        ws.send_json = AsyncMock()
+        call_count = 0
+
+        async def receive_json_side_effect():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return {"type": "message"}  # no "content" key
+            raise WebSocketDisconnect()
+
+        ws.receive_json = AsyncMock(side_effect=receive_json_side_effect)
+
+        await architect_websocket(ws, session.id, db_session)
+
+        ws.accept.assert_called_once()
+        # Should get "Empty message" error since content defaults to ""
+        ws.send_json.assert_called_once()
+        call_args = ws.send_json.call_args[0][0]
+        assert call_args["type"] == "error"
+        assert "Empty message" in call_args["content"]

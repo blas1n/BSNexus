@@ -1,13 +1,15 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.src.api import pm, projects, tasks, workers
+from backend.src.api import architect, pm, projects, tasks, workers
+from backend.src.api.architect import architect_websocket
 from backend.src.queue.background import start_background_consumer
 from backend.src.queue.streams import RedisStreamManager
-from backend.src.storage.database import init_db, engine
+from backend.src.storage.database import get_db, init_db, engine
 from backend.src.storage.redis_client import get_redis, close_redis
 
 
@@ -82,3 +84,23 @@ app.include_router(tasks.router)
 app.include_router(projects.router)
 app.include_router(workers.router)
 app.include_router(pm.router)
+app.include_router(architect.router)
+
+
+@app.websocket("/ws/architect/{session_id}")
+async def ws_architect(
+    websocket: WebSocket,
+    session_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """WebSocket endpoint for architect chat."""
+    import uuid as _uuid
+
+    try:
+        sid = _uuid.UUID(session_id)
+    except ValueError:
+        await websocket.accept()
+        await websocket.send_json({"type": "error", "content": "Invalid session ID"})
+        await websocket.close()
+        return
+    await architect_websocket(websocket, sid, db)
