@@ -6,6 +6,7 @@ import { projectsApi } from '../api/projects'
 import KanbanBoard from '../components/board/KanbanBoard'
 import BoardStats from '../components/board/BoardStats'
 import TaskDetail from '../components/board/TaskDetail'
+import PMControl from '../components/board/PMControl'
 import type { Task } from '../types/task'
 
 export default function BoardPage() {
@@ -36,6 +37,11 @@ export default function BoardPage() {
           <span className={`inline-block w-2 h-2 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`} />
           <span className="text-xs text-gray-500">{isConnected ? 'Live' : 'Offline'}</span>
         </div>
+      </div>
+
+      {/* PM Control */}
+      <div className="mb-4">
+        <PMControl projectId={projectId!} />
       </div>
 
       {/* Stats bar */}
