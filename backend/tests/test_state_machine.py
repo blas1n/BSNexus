@@ -48,13 +48,13 @@ def make_task(status: TaskStatus = TaskStatus.waiting, **kwargs) -> Task:
         version=kwargs.get("version", 1),
         worker_id=kwargs.get("worker_id", None),
         reviewer_id=kwargs.get("reviewer_id", None),
-        worker_prompt=None,
-        qa_prompt=None,
-        branch_name=None,
-        commit_hash=None,
-        qa_result=None,
-        output_path=None,
-        error_message=None,
+        worker_prompt=kwargs.get("worker_prompt", None),
+        qa_prompt=kwargs.get("qa_prompt", None),
+        branch_name=kwargs.get("branch_name", None),
+        commit_hash=kwargs.get("commit_hash", None),
+        qa_result=kwargs.get("qa_result", None),
+        output_path=kwargs.get("output_path", None),
+        error_message=kwargs.get("error_message", None),
         started_at=None,
         completed_at=None,
         created_at=now,
@@ -351,3 +351,171 @@ async def test_on_rejected_sets_error_message(
     # is consumed for history recording and does not propagate to side-effect kwargs.
     await state_machine._on_rejected(task, db_session=mock_db, stream_manager=mock_stream, reason="Build failed")
     assert task.error_message == "Build failed"
+
+
+# ── GitOps + PromptSigner integration tests ──────────────────────────────
+
+
+async def test_on_queued_with_prompt_signer_signs_worker_prompt(
+    mock_db: AsyncMock, mock_stream: AsyncMock,
+) -> None:
+    mock_signer = AsyncMock()
+    mock_signer.sign = lambda prompt: {"prompt": prompt, "signature": "test-sig", "nonce": "test-nonce", "timestamp": 0}
+    sm = TaskStateMachine(prompt_signer=mock_signer)
+    task = make_task(status=TaskStatus.ready, worker_prompt={"content": "test"})
+
+    await sm.transition(task, TaskStatus.queued, db_session=mock_db, stream_manager=mock_stream)
+
+    call_args = mock_stream.publish.call_args
+    payload = call_args[0][1]
+    assert "signed_worker_prompt" in payload
+    assert payload["signed_worker_prompt"]["signature"] == "test-sig"
+
+
+async def test_on_queued_without_prompt_signer_no_signature(
+    mock_db: AsyncMock, mock_stream: AsyncMock,
+) -> None:
+    sm = TaskStateMachine()
+    task = make_task(status=TaskStatus.ready, worker_prompt={"content": "test"})
+
+    await sm.transition(task, TaskStatus.queued, db_session=mock_db, stream_manager=mock_stream)
+
+    call_args = mock_stream.publish.call_args
+    payload = call_args[0][1]
+    assert "signed_worker_prompt" not in payload
+
+
+async def test_on_review_with_prompt_signer_signs_qa_prompt(
+    mock_db: AsyncMock, mock_stream: AsyncMock,
+) -> None:
+    mock_signer = AsyncMock()
+    mock_signer.sign = lambda prompt: {"prompt": prompt, "signature": "qa-sig", "nonce": "qa-nonce", "timestamp": 0}
+    sm = TaskStateMachine(prompt_signer=mock_signer)
+    task = make_task(status=TaskStatus.in_progress, qa_prompt={"content": "qa test"})
+
+    await sm.transition(task, TaskStatus.review, db_session=mock_db, stream_manager=mock_stream)
+
+    call_args = mock_stream.publish.call_args
+    payload = call_args[0][1]
+    assert "signed_qa_prompt" in payload
+    assert payload["signed_qa_prompt"]["signature"] == "qa-sig"
+
+
+async def test_on_review_without_prompt_signer_no_signature(
+    mock_db: AsyncMock, mock_stream: AsyncMock,
+) -> None:
+    sm = TaskStateMachine()
+    task = make_task(status=TaskStatus.in_progress, qa_prompt={"content": "qa test"})
+
+    await sm.transition(task, TaskStatus.review, db_session=mock_db, stream_manager=mock_stream)
+
+    call_args = mock_stream.publish.call_args
+    payload = call_args[0][1]
+    assert "signed_qa_prompt" not in payload
+
+
+async def test_on_done_with_git_ops_commits(
+    mock_db: AsyncMock, mock_stream: AsyncMock,
+) -> None:
+    mock_git = AsyncMock()
+    mock_git.commit_task = AsyncMock(return_value="abc123hash")
+    sm = TaskStateMachine(git_ops=mock_git)
+    task = make_task(status=TaskStatus.review, branch_name="feature/test")
+
+    with patch("backend.src.core.state_machine.TaskRepository") as MockRepo:
+        mock_repo_instance = AsyncMock()
+        mock_repo_instance.find_waiting_dependents = AsyncMock(return_value=[])
+        MockRepo.return_value = mock_repo_instance
+
+        await sm.transition(task, TaskStatus.done, db_session=mock_db, stream_manager=mock_stream)
+
+    mock_git.commit_task.assert_called_once_with(str(task.id), task.title, "feature/test")
+    assert task.commit_hash == "abc123hash"
+    assert task.status == TaskStatus.done
+
+
+async def test_on_done_without_git_ops_no_commit(
+    mock_db: AsyncMock, mock_stream: AsyncMock,
+) -> None:
+    sm = TaskStateMachine()
+    task = make_task(status=TaskStatus.review, branch_name="feature/test")
+
+    with patch("backend.src.core.state_machine.TaskRepository") as MockRepo:
+        mock_repo_instance = AsyncMock()
+        mock_repo_instance.find_waiting_dependents = AsyncMock(return_value=[])
+        MockRepo.return_value = mock_repo_instance
+
+        await sm.transition(task, TaskStatus.done, db_session=mock_db, stream_manager=mock_stream)
+
+    assert task.commit_hash is None
+    assert task.status == TaskStatus.done
+
+
+async def test_on_done_git_ops_failure_still_completes(
+    mock_db: AsyncMock, mock_stream: AsyncMock,
+) -> None:
+    mock_git = AsyncMock()
+    mock_git.commit_task = AsyncMock(side_effect=RuntimeError("git failed"))
+    sm = TaskStateMachine(git_ops=mock_git)
+    task = make_task(status=TaskStatus.review, branch_name="feature/test")
+
+    with patch("backend.src.core.state_machine.TaskRepository") as MockRepo:
+        mock_repo_instance = AsyncMock()
+        mock_repo_instance.find_waiting_dependents = AsyncMock(return_value=[])
+        MockRepo.return_value = mock_repo_instance
+
+        await sm.transition(task, TaskStatus.done, db_session=mock_db, stream_manager=mock_stream)
+
+    assert task.status == TaskStatus.done
+    assert task.completed_at is not None
+    assert task.commit_hash is None
+
+
+async def test_on_rejected_with_git_ops_reverts_commit(
+    mock_db: AsyncMock, mock_stream: AsyncMock,
+) -> None:
+    mock_git = AsyncMock()
+    mock_git.revert_task = AsyncMock()
+    sm = TaskStateMachine(git_ops=mock_git)
+    task = make_task(status=TaskStatus.in_progress, commit_hash="abc123")
+
+    await sm.transition(
+        task, TaskStatus.rejected, db_session=mock_db, stream_manager=mock_stream, reason="Bad code"
+    )
+
+    mock_git.revert_task.assert_called_once_with("abc123")
+    assert task.commit_hash is None
+    assert task.status == TaskStatus.rejected
+
+
+async def test_on_rejected_without_commit_hash_no_revert(
+    mock_db: AsyncMock, mock_stream: AsyncMock,
+) -> None:
+    mock_git = AsyncMock()
+    mock_git.revert_task = AsyncMock()
+    sm = TaskStateMachine(git_ops=mock_git)
+    task = make_task(status=TaskStatus.in_progress)
+
+    await sm.transition(
+        task, TaskStatus.rejected, db_session=mock_db, stream_manager=mock_stream, reason="Bad code"
+    )
+
+    mock_git.revert_task.assert_not_called()
+    assert task.status == TaskStatus.rejected
+
+
+async def test_on_rejected_git_ops_failure_still_rejects(
+    mock_db: AsyncMock, mock_stream: AsyncMock,
+) -> None:
+    mock_git = AsyncMock()
+    mock_git.revert_task = AsyncMock(side_effect=RuntimeError("revert failed"))
+    sm = TaskStateMachine(git_ops=mock_git)
+    task = make_task(status=TaskStatus.in_progress, commit_hash="abc123")
+
+    await sm._on_rejected(
+        task, db_session=mock_db, stream_manager=mock_stream, reason="Bad code"
+    )
+
+    assert task.error_message == "Bad code"
+    # commit_hash is NOT cleared because revert_task raised RuntimeError
+    assert task.commit_hash == "abc123"
