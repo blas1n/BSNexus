@@ -1,35 +1,69 @@
-import { useEffect, useRef, useCallback } from 'react'
+import { useEffect, useRef, useCallback, useState } from 'react'
 
 interface UseWebSocketOptions {
   url: string
-  onMessage?: (data: unknown) => void
+  onMessage: (data: unknown) => void
   onOpen?: () => void
   onClose?: () => void
   onError?: (error: Event) => void
+  reconnect?: boolean
+  reconnectInterval?: number
   autoConnect?: boolean
 }
 
-export function useWebSocket({ url, onMessage, onOpen, onClose, onError, autoConnect = true }: UseWebSocketOptions) {
+export function useWebSocket({
+  url,
+  onMessage,
+  onOpen,
+  onClose,
+  onError,
+  reconnect = true,
+  reconnectInterval = 3000,
+  autoConnect = true,
+}: UseWebSocketOptions) {
   const wsRef = useRef<WebSocket | null>(null)
+  const [isConnected, setIsConnected] = useState(false)
+  const reconnectRef = useRef(reconnect)
+  const connectRef = useRef<() => void>(() => {})
+
+  useEffect(() => {
+    reconnectRef.current = reconnect
+  }, [reconnect])
 
   const connect = useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) return
+
     const ws = new WebSocket(url)
 
-    ws.onopen = () => onOpen?.()
-    ws.onclose = () => onClose?.()
-    ws.onerror = (e) => onError?.(e)
+    ws.onopen = () => {
+      setIsConnected(true)
+      onOpen?.()
+    }
+
     ws.onmessage = (event) => {
       const data = JSON.parse(event.data)
-      onMessage?.(data)
+      onMessage(data)
+    }
+
+    ws.onclose = () => {
+      setIsConnected(false)
+      wsRef.current = null
+      onClose?.()
+      if (reconnectRef.current) {
+        setTimeout(() => connectRef.current(), reconnectInterval)
+      }
+    }
+
+    ws.onerror = (error) => {
+      onError?.(error)
     }
 
     wsRef.current = ws
-  }, [url, onMessage, onOpen, onClose, onError])
+  }, [url, onMessage, onOpen, onClose, onError, reconnectInterval])
 
-  const disconnect = useCallback(() => {
-    wsRef.current?.close()
-    wsRef.current = null
-  }, [])
+  useEffect(() => {
+    connectRef.current = connect
+  }, [connect])
 
   const send = useCallback((data: unknown) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -37,10 +71,20 @@ export function useWebSocket({ url, onMessage, onOpen, onClose, onError, autoCon
     }
   }, [])
 
+  const disconnect = useCallback(() => {
+    reconnectRef.current = false
+    wsRef.current?.close()
+    wsRef.current = null
+  }, [])
+
   useEffect(() => {
     if (autoConnect) connect()
-    return () => disconnect()
-  }, [autoConnect, connect, disconnect])
+    return () => {
+      reconnectRef.current = false
+      wsRef.current?.close()
+      wsRef.current = null
+    }
+  }, [autoConnect, connect])
 
-  return { connect, disconnect, send }
+  return { isConnected, send, disconnect, connect }
 }
