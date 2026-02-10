@@ -1,4 +1,3 @@
-import type { BoardResponse } from '../../types/task'
 import type { Task } from '../../types/task'
 import KanbanColumn from './KanbanColumn'
 
@@ -15,18 +14,19 @@ const columnLabels: Record<string, string> = {
 }
 
 interface Props {
-  board: BoardResponse
+  columns: Record<string, Task[]>
   onTaskClick?: (task: Task) => void
 }
 
-export default function KanbanBoard({ board, onTaskClick }: Props) {
+export default function KanbanBoard({ columns, onTaskClick }: Props) {
   return (
     <div className="flex gap-4 overflow-x-auto pb-4">
       {columnOrder.map((status) => (
         <KanbanColumn
           key={status}
           title={columnLabels[status]}
-          tasks={board.columns[status]?.tasks ?? []}
+          status={status}
+          tasks={columns[status] || []}
           onTaskClick={onTaskClick}
         />
       ))}
