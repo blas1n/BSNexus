@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.src.api import architect, pm, projects, tasks, workers
+from backend.src.api import architect, board, pm, projects, tasks, workers
 from backend.src.api.architect import architect_websocket
 from backend.src.queue.background import start_background_consumer
 from backend.src.queue.streams import RedisStreamManager
@@ -85,6 +85,7 @@ app.include_router(projects.router)
 app.include_router(workers.router)
 app.include_router(pm.router)
 app.include_router(architect.router)
+app.include_router(board.router)
 
 
 @app.websocket("/ws/architect/{session_id}")

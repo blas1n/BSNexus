@@ -204,6 +204,7 @@ class BoardResponse(BaseModel):
     project_id: uuid.UUID
     columns: dict[str, BoardColumn]
     stats: dict[str, int]
+    workers: dict[str, int] = Field(default_factory=dict)
 
 
 # ── Common Schemas ────────────────────────────────────────────────────
