@@ -118,22 +118,29 @@ class TaskStateMachine:
         }
         handler = side_effect_map.get(new_status)
         if handler is not None:
-            await handler(task, db_session=db_session, stream_manager=stream_manager, **kwargs)
+            await handler(task, old_status=old_status, db_session=db_session, stream_manager=stream_manager, **kwargs)
 
     async def _on_ready(
         self,
         task: Task,
         *,
+        old_status: Optional[TaskStatus] = None,
         db_session: Optional[AsyncSession] = None,
         stream_manager: Optional[RedisStreamManager] = None,
         **kwargs: Any,
     ) -> None:
-        """No-op: dependency check is done by the caller."""
+        """Reset execution fields when retrying from REJECTED."""
+        if old_status == TaskStatus.rejected:
+            task.worker_id = None
+            task.reviewer_id = None
+            task.error_message = None
+            task.qa_result = None
 
     async def _on_queued(
         self,
         task: Task,
         *,
+        old_status: Optional[TaskStatus] = None,
         db_session: Optional[AsyncSession] = None,
         stream_manager: Optional[RedisStreamManager] = None,
         **kwargs: Any,
@@ -157,6 +164,7 @@ class TaskStateMachine:
         self,
         task: Task,
         *,
+        old_status: Optional[TaskStatus] = None,
         db_session: Optional[AsyncSession] = None,
         stream_manager: Optional[RedisStreamManager] = None,
         **kwargs: Any,
@@ -177,6 +185,7 @@ class TaskStateMachine:
         self,
         task: Task,
         *,
+        old_status: Optional[TaskStatus] = None,
         db_session: Optional[AsyncSession] = None,
         stream_manager: Optional[RedisStreamManager] = None,
         **kwargs: Any,
@@ -206,6 +215,7 @@ class TaskStateMachine:
         self,
         task: Task,
         *,
+        old_status: Optional[TaskStatus] = None,
         db_session: Optional[AsyncSession] = None,
         stream_manager: Optional[RedisStreamManager] = None,
         **kwargs: Any,
@@ -234,6 +244,7 @@ class TaskStateMachine:
         self,
         task: Task,
         *,
+        old_status: Optional[TaskStatus] = None,
         db_session: Optional[AsyncSession] = None,
         stream_manager: Optional[RedisStreamManager] = None,
         **kwargs: Any,
@@ -256,6 +267,7 @@ class TaskStateMachine:
         self,
         task: Task,
         *,
+        old_status: Optional[TaskStatus] = None,
         db_session: Optional[AsyncSession] = None,
         stream_manager: Optional[RedisStreamManager] = None,
         **kwargs: Any,

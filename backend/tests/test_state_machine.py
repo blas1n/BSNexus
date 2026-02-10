@@ -721,3 +721,48 @@ async def test_worker_registry_failure_does_not_block_transition(
 
     assert task.status == TaskStatus.in_progress
     assert task.worker_id == worker_id
+
+
+# ── REJECTED → READY field reset tests ────────────────────────────────────
+
+
+async def test_rejected_to_ready_resets_worker_id(
+    state_machine: TaskStateMachine, mock_db: AsyncMock, mock_stream: AsyncMock
+) -> None:
+    task = make_task(status=TaskStatus.rejected, worker_id=uuid.uuid4())
+    await state_machine.transition(task, TaskStatus.ready, db_session=mock_db, stream_manager=mock_stream)
+    assert task.worker_id is None
+
+
+async def test_rejected_to_ready_resets_reviewer_id(
+    state_machine: TaskStateMachine, mock_db: AsyncMock, mock_stream: AsyncMock
+) -> None:
+    task = make_task(status=TaskStatus.rejected, reviewer_id=uuid.uuid4())
+    await state_machine.transition(task, TaskStatus.ready, db_session=mock_db, stream_manager=mock_stream)
+    assert task.reviewer_id is None
+
+
+async def test_rejected_to_ready_resets_error_message(
+    state_machine: TaskStateMachine, mock_db: AsyncMock, mock_stream: AsyncMock
+) -> None:
+    task = make_task(status=TaskStatus.rejected, error_message="Previous error")
+    await state_machine.transition(task, TaskStatus.ready, db_session=mock_db, stream_manager=mock_stream)
+    assert task.error_message is None
+
+
+async def test_rejected_to_ready_resets_qa_result(
+    state_machine: TaskStateMachine, mock_db: AsyncMock, mock_stream: AsyncMock
+) -> None:
+    task = make_task(status=TaskStatus.rejected, qa_result={"passed": False})
+    await state_machine.transition(task, TaskStatus.ready, db_session=mock_db, stream_manager=mock_stream)
+    assert task.qa_result is None
+
+
+async def test_waiting_to_ready_does_not_reset_fields(
+    state_machine: TaskStateMachine, mock_db: AsyncMock, mock_stream: AsyncMock
+) -> None:
+    task = make_task(status=TaskStatus.waiting)
+    # These should remain unchanged (they're already None for waiting tasks, but verify behavior)
+    await state_machine.transition(task, TaskStatus.ready, db_session=mock_db, stream_manager=mock_stream)
+    assert task.status == TaskStatus.ready
+    # No fields should be explicitly touched by _on_ready for waiting->ready
