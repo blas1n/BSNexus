@@ -293,3 +293,162 @@ async def test_list_project_tasks(client: AsyncClient, db_session):
     titles = {t["title"] for t in data}
     assert "Task One" in titles
     assert "Task Two" in titles
+
+
+async def test_transition_with_matching_version(client: AsyncClient, db_session):
+    """POST /api/tasks/{id}/transition with matching expected_version succeeds."""
+    project, phase = await create_project_and_phase(db_session)
+
+    create_response = await client.post(
+        "/api/tasks/",
+        json={
+            "project_id": str(project.id),
+            "phase_id": str(phase.id),
+            "title": "Version Match Task",
+            "description": "test",
+            "priority": "medium",
+            "depends_on": [],
+            "worker_prompt": "work",
+            "qa_prompt": "check",
+        },
+    )
+    task_id = create_response.json()["id"]
+    version = create_response.json()["version"]
+
+    response = await client.post(
+        f"/api/tasks/{task_id}/transition",
+        json={"new_status": "queued", "actor": "test", "expected_version": version},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "queued"
+
+
+async def test_transition_with_mismatched_version_409(client: AsyncClient, db_session):
+    """POST /api/tasks/{id}/transition with wrong expected_version returns 409."""
+    project, phase = await create_project_and_phase(db_session)
+
+    create_response = await client.post(
+        "/api/tasks/",
+        json={
+            "project_id": str(project.id),
+            "phase_id": str(phase.id),
+            "title": "Version Mismatch Task",
+            "description": "test",
+            "priority": "medium",
+            "depends_on": [],
+            "worker_prompt": "work",
+            "qa_prompt": "check",
+        },
+    )
+    task_id = create_response.json()["id"]
+
+    response = await client.post(
+        f"/api/tasks/{task_id}/transition",
+        json={"new_status": "queued", "actor": "test", "expected_version": 999},
+    )
+
+    assert response.status_code == 409
+    assert "Version conflict" in response.json()["detail"]
+    assert "999" in response.json()["detail"]
+
+
+async def test_transition_without_expected_version(client: AsyncClient, db_session):
+    """POST /api/tasks/{id}/transition without expected_version still works (backward compat)."""
+    project, phase = await create_project_and_phase(db_session)
+
+    create_response = await client.post(
+        "/api/tasks/",
+        json={
+            "project_id": str(project.id),
+            "phase_id": str(phase.id),
+            "title": "No Version Task",
+            "description": "test",
+            "priority": "medium",
+            "depends_on": [],
+            "worker_prompt": "work",
+            "qa_prompt": "check",
+        },
+    )
+    task_id = create_response.json()["id"]
+
+    response = await client.post(
+        f"/api/tasks/{task_id}/transition",
+        json={"new_status": "queued", "actor": "test"},
+    )
+
+    assert response.status_code == 200
+
+
+async def test_update_with_mismatched_version_409(client: AsyncClient, db_session):
+    """PATCH /api/tasks/{id} with wrong expected_version returns 409."""
+    project, phase = await create_project_and_phase(db_session)
+
+    # Create a task with dependency so it's in WAITING status (updatable)
+    dep_response = await client.post(
+        "/api/tasks/",
+        json={
+            "project_id": str(project.id),
+            "phase_id": str(phase.id),
+            "title": "Dep Task",
+            "description": "dep",
+            "priority": "medium",
+            "depends_on": [],
+            "worker_prompt": "work",
+            "qa_prompt": "check",
+        },
+    )
+    dep_id = dep_response.json()["id"]
+
+    create_response = await client.post(
+        "/api/tasks/",
+        json={
+            "project_id": str(project.id),
+            "phase_id": str(phase.id),
+            "title": "Update Version Task",
+            "description": "test",
+            "priority": "medium",
+            "depends_on": [dep_id],
+            "worker_prompt": "work",
+            "qa_prompt": "check",
+        },
+    )
+    task_id = create_response.json()["id"]
+
+    response = await client.patch(
+        f"/api/tasks/{task_id}",
+        json={"title": "New Title", "expected_version": 999},
+    )
+
+    assert response.status_code == 409
+    assert "Version conflict" in response.json()["detail"]
+
+
+async def test_409_response_contains_current_version(client: AsyncClient, db_session):
+    """409 response detail includes the current version number."""
+    project, phase = await create_project_and_phase(db_session)
+
+    create_response = await client.post(
+        "/api/tasks/",
+        json={
+            "project_id": str(project.id),
+            "phase_id": str(phase.id),
+            "title": "Version Info Task",
+            "description": "test",
+            "priority": "medium",
+            "depends_on": [],
+            "worker_prompt": "work",
+            "qa_prompt": "check",
+        },
+    )
+    task_id = create_response.json()["id"]
+    current_version = create_response.json()["version"]
+
+    response = await client.post(
+        f"/api/tasks/{task_id}/transition",
+        json={"new_status": "queued", "actor": "test", "expected_version": 999},
+    )
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert str(current_version) in detail

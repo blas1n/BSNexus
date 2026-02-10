@@ -128,10 +128,18 @@ async def update_task(
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
 
+    # Optimistic locking check
+    if task_data.expected_version is not None:
+        if task.version != task_data.expected_version:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Version conflict: expected {task_data.expected_version}, current {task.version}",
+            )
+
     if task.status not in (models.TaskStatus.waiting, models.TaskStatus.ready):
         raise HTTPException(status_code=400, detail="Task can only be updated in waiting or ready status")
 
-    update_data = task_data.model_dump(exclude_unset=True)
+    update_data = task_data.model_dump(exclude_unset=True, exclude={"expected_version"})
     for field, value in update_data.items():
         if field == "priority" and value is not None:
             setattr(task, field, models.TaskPriority(value))
@@ -160,6 +168,14 @@ async def transition_task(
 
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
+
+    # Optimistic locking check
+    if transition.expected_version is not None:
+        if task.version != transition.expected_version:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Version conflict: expected {transition.expected_version}, current {task.version}",
+            )
 
     # Convert schema TaskStatus to model TaskStatus
     model_status = models.TaskStatus(transition.new_status.value)

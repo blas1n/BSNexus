@@ -30,6 +30,7 @@ class TaskStatus(str, enum.Enum):
     review = "review"
     done = "done"
     rejected = "rejected"
+    blocked = "blocked"
 
 
 class TaskPriority(str, enum.Enum):
@@ -129,12 +130,14 @@ class TaskUpdate(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
     priority: Optional[TaskPriority] = None
+    expected_version: Optional[int] = None
 
 
 class TaskTransition(BaseModel):
     new_status: TaskStatus
     reason: Optional[str] = None
     actor: str = "user"
+    expected_version: Optional[int] = None
 
 
 class TaskResponse(BaseModel):
