@@ -30,6 +30,7 @@ class TaskStatus(str, enum.Enum):
     review = "review"
     done = "done"
     rejected = "rejected"
+    blocked = "blocked"
 
 
 class TaskPriority(str, enum.Enum):

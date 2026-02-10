@@ -84,6 +84,8 @@ def test_can_transition_all_valid_paths(state_machine: TaskStateMachine) -> None
         (TaskStatus.review, TaskStatus.rejected),
         (TaskStatus.done, TaskStatus.rejected),
         (TaskStatus.rejected, TaskStatus.ready),
+        (TaskStatus.waiting, TaskStatus.blocked),
+        (TaskStatus.blocked, TaskStatus.ready),
     ]
     for from_s, to_s in valid_pairs:
         assert state_machine.can_transition(from_s, to_s) is True, f"{from_s} -> {to_s} should be valid"
@@ -160,9 +162,16 @@ async def test_valid_transition_review_to_rejected(
     state_machine: TaskStateMachine, mock_db: AsyncMock, mock_stream: AsyncMock
 ) -> None:
     task = make_task(status=TaskStatus.review)
-    result = await state_machine.transition(
-        task, TaskStatus.rejected, db_session=mock_db, stream_manager=mock_stream, reason="Quality issues"
-    )
+
+    with patch("backend.src.core.state_machine.TaskRepository") as MockRepo:
+        mock_repo_instance = AsyncMock()
+        mock_repo_instance.find_waiting_dependents = AsyncMock(return_value=[])
+        MockRepo.return_value = mock_repo_instance
+
+        result = await state_machine.transition(
+            task, TaskStatus.rejected, db_session=mock_db, stream_manager=mock_stream, reason="Quality issues"
+        )
+
     assert result.status == TaskStatus.rejected
 
 
@@ -178,9 +187,16 @@ async def test_valid_transition_done_to_rejected(
     state_machine: TaskStateMachine, mock_db: AsyncMock, mock_stream: AsyncMock
 ) -> None:
     task = make_task(status=TaskStatus.done)
-    result = await state_machine.transition(
-        task, TaskStatus.rejected, db_session=mock_db, stream_manager=mock_stream, reason="Rollback needed"
-    )
+
+    with patch("backend.src.core.state_machine.TaskRepository") as MockRepo:
+        mock_repo_instance = AsyncMock()
+        mock_repo_instance.find_waiting_dependents = AsyncMock(return_value=[])
+        MockRepo.return_value = mock_repo_instance
+
+        result = await state_machine.transition(
+            task, TaskStatus.rejected, db_session=mock_db, stream_manager=mock_stream, reason="Rollback needed"
+        )
+
     assert result.status == TaskStatus.rejected
 
 
@@ -240,6 +256,7 @@ async def test_promote_dependents_on_done(
     with patch("backend.src.core.state_machine.TaskRepository") as MockRepo:
         mock_repo_instance = AsyncMock()
         mock_repo_instance.find_waiting_dependents = AsyncMock(return_value=[waiting_task])
+        mock_repo_instance.find_blocked_dependents = AsyncMock(return_value=[])
         mock_repo_instance.check_dependencies_met = AsyncMock(return_value=True)
         MockRepo.return_value = mock_repo_instance
 
@@ -349,7 +366,13 @@ async def test_on_rejected_sets_error_message(
     task = make_task(status=TaskStatus.in_progress)
     # Call _on_rejected directly because the `reason` named param in transition()
     # is consumed for history recording and does not propagate to side-effect kwargs.
-    await state_machine._on_rejected(task, db_session=mock_db, stream_manager=mock_stream, reason="Build failed")
+    with patch("backend.src.core.state_machine.TaskRepository") as MockRepo:
+        mock_repo_instance = AsyncMock()
+        mock_repo_instance.find_waiting_dependents = AsyncMock(return_value=[])
+        MockRepo.return_value = mock_repo_instance
+
+        await state_machine._on_rejected(task, db_session=mock_db, stream_manager=mock_stream, reason="Build failed")
+
     assert task.error_message == "Build failed"
 
 
@@ -479,9 +502,14 @@ async def test_on_rejected_with_git_ops_reverts_commit(
     sm = TaskStateMachine(git_ops=mock_git)
     task = make_task(status=TaskStatus.in_progress, commit_hash="abc123")
 
-    await sm.transition(
-        task, TaskStatus.rejected, db_session=mock_db, stream_manager=mock_stream, reason="Bad code"
-    )
+    with patch("backend.src.core.state_machine.TaskRepository") as MockRepo:
+        mock_repo_instance = AsyncMock()
+        mock_repo_instance.find_waiting_dependents = AsyncMock(return_value=[])
+        MockRepo.return_value = mock_repo_instance
+
+        await sm.transition(
+            task, TaskStatus.rejected, db_session=mock_db, stream_manager=mock_stream, reason="Bad code"
+        )
 
     mock_git.revert_task.assert_called_once_with("abc123")
     assert task.commit_hash is None
@@ -496,9 +524,14 @@ async def test_on_rejected_without_commit_hash_no_revert(
     sm = TaskStateMachine(git_ops=mock_git)
     task = make_task(status=TaskStatus.in_progress)
 
-    await sm.transition(
-        task, TaskStatus.rejected, db_session=mock_db, stream_manager=mock_stream, reason="Bad code"
-    )
+    with patch("backend.src.core.state_machine.TaskRepository") as MockRepo:
+        mock_repo_instance = AsyncMock()
+        mock_repo_instance.find_waiting_dependents = AsyncMock(return_value=[])
+        MockRepo.return_value = mock_repo_instance
+
+        await sm.transition(
+            task, TaskStatus.rejected, db_session=mock_db, stream_manager=mock_stream, reason="Bad code"
+        )
 
     mock_git.revert_task.assert_not_called()
     assert task.status == TaskStatus.rejected
@@ -512,10 +545,98 @@ async def test_on_rejected_git_ops_failure_still_rejects(
     sm = TaskStateMachine(git_ops=mock_git)
     task = make_task(status=TaskStatus.in_progress, commit_hash="abc123")
 
-    await sm._on_rejected(
-        task, db_session=mock_db, stream_manager=mock_stream, reason="Bad code"
-    )
+    with patch("backend.src.core.state_machine.TaskRepository") as MockRepo:
+        mock_repo_instance = AsyncMock()
+        mock_repo_instance.find_waiting_dependents = AsyncMock(return_value=[])
+        MockRepo.return_value = mock_repo_instance
+
+        await sm._on_rejected(
+            task, db_session=mock_db, stream_manager=mock_stream, reason="Bad code"
+        )
 
     assert task.error_message == "Bad code"
     # commit_hash is NOT cleared because revert_task raised RuntimeError
     assert task.commit_hash == "abc123"
+
+
+# ── BLOCKED state tests ───────────────────────────────────────────────────
+
+
+def test_can_transition_waiting_to_blocked(state_machine: TaskStateMachine) -> None:
+    assert state_machine.can_transition(TaskStatus.waiting, TaskStatus.blocked) is True
+
+
+def test_can_transition_blocked_to_ready(state_machine: TaskStateMachine) -> None:
+    assert state_machine.can_transition(TaskStatus.blocked, TaskStatus.ready) is True
+
+
+def test_cannot_transition_blocked_to_done(state_machine: TaskStateMachine) -> None:
+    assert state_machine.can_transition(TaskStatus.blocked, TaskStatus.done) is False
+
+
+def test_cannot_transition_blocked_to_queued(state_machine: TaskStateMachine) -> None:
+    assert state_machine.can_transition(TaskStatus.blocked, TaskStatus.queued) is False
+
+
+async def test_valid_transition_waiting_to_blocked(
+    state_machine: TaskStateMachine, mock_db: AsyncMock, mock_stream: AsyncMock
+) -> None:
+    task = make_task(status=TaskStatus.waiting)
+    result = await state_machine.transition(
+        task, TaskStatus.blocked, reason="dependency rejected", actor="system",
+        db_session=mock_db, stream_manager=mock_stream,
+    )
+    assert result.status == TaskStatus.blocked
+    assert result.version == 2
+
+
+async def test_valid_transition_blocked_to_ready(
+    state_machine: TaskStateMachine, mock_db: AsyncMock, mock_stream: AsyncMock
+) -> None:
+    task = make_task(status=TaskStatus.blocked)
+    result = await state_machine.transition(
+        task, TaskStatus.ready, reason="blocker resolved", actor="system",
+        db_session=mock_db, stream_manager=mock_stream,
+    )
+    assert result.status == TaskStatus.ready
+    assert result.version == 2
+
+
+async def test_on_rejected_blocks_waiting_dependents(
+    state_machine: TaskStateMachine, mock_db: AsyncMock, mock_stream: AsyncMock
+) -> None:
+    task = make_task(status=TaskStatus.in_progress)
+    waiting_dep = make_task(status=TaskStatus.waiting)
+
+    with patch("backend.src.core.state_machine.TaskRepository") as MockRepo:
+        mock_repo_instance = AsyncMock()
+        mock_repo_instance.find_waiting_dependents = AsyncMock(return_value=[waiting_dep])
+        MockRepo.return_value = mock_repo_instance
+
+        await state_machine.transition(
+            task, TaskStatus.rejected, db_session=mock_db, stream_manager=mock_stream, reason="Bad code"
+        )
+
+    assert task.status == TaskStatus.rejected
+    assert waiting_dep.status == TaskStatus.blocked
+    assert waiting_dep.version == 2
+
+
+async def test_on_done_promotes_blocked_dependents(
+    state_machine: TaskStateMachine, mock_db: AsyncMock, mock_stream: AsyncMock
+) -> None:
+    task = make_task(status=TaskStatus.review)
+    blocked_dep = make_task(status=TaskStatus.blocked)
+
+    with patch("backend.src.core.state_machine.TaskRepository") as MockRepo:
+        mock_repo_instance = AsyncMock()
+        mock_repo_instance.find_waiting_dependents = AsyncMock(return_value=[])
+        mock_repo_instance.find_blocked_dependents = AsyncMock(return_value=[blocked_dep])
+        mock_repo_instance.check_dependencies_met = AsyncMock(return_value=True)
+        MockRepo.return_value = mock_repo_instance
+
+        await state_machine.transition(task, TaskStatus.done, db_session=mock_db, stream_manager=mock_stream)
+
+    assert task.status == TaskStatus.done
+    assert blocked_dep.status == TaskStatus.ready
+    assert blocked_dep.version == 2

@@ -20,13 +20,14 @@ class TaskStateMachine:
     """State machine for managing task status transitions."""
 
     TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
-        TaskStatus.waiting: {TaskStatus.ready},
+        TaskStatus.waiting: {TaskStatus.ready, TaskStatus.blocked},
         TaskStatus.ready: {TaskStatus.queued},
         TaskStatus.queued: {TaskStatus.in_progress},
         TaskStatus.in_progress: {TaskStatus.review, TaskStatus.rejected},
         TaskStatus.review: {TaskStatus.done, TaskStatus.rejected},
         TaskStatus.done: {TaskStatus.rejected},
         TaskStatus.rejected: {TaskStatus.ready},
+        TaskStatus.blocked: {TaskStatus.ready},
     }
 
     def __init__(
@@ -110,6 +111,7 @@ class TaskStateMachine:
             TaskStatus.review: self._on_review,
             TaskStatus.done: self._on_done,
             TaskStatus.rejected: self._on_rejected,
+            TaskStatus.blocked: self._on_blocked,
         }
         handler = side_effect_map.get(new_status)
         if handler is not None:
@@ -225,6 +227,37 @@ class TaskStateMachine:
                 task.commit_hash = None
             except RuntimeError:
                 pass  # Git failure should not block rejection
+        if db_session is not None:
+            repo = TaskRepository(db_session)
+            await self._block_dependents(task, repo, db_session)
+
+    async def _on_blocked(
+        self,
+        task: Task,
+        *,
+        db_session: Optional[AsyncSession] = None,
+        stream_manager: Optional[RedisStreamManager] = None,
+        **kwargs: Any,
+    ) -> None:
+        """No-op: blocked tasks wait until blocker is resolved."""
+
+    async def _block_dependents(self, task: Task, repo: TaskRepository, db_session: AsyncSession) -> list[Task]:
+        """Transition WAITING dependents to BLOCKED when a task is rejected."""
+        waiting_tasks = await repo.find_waiting_dependents(task.id)
+        blocked: list[Task] = []
+        for waiting_task in waiting_tasks:
+            waiting_task.status = TaskStatus.blocked
+            waiting_task.version += 1
+            history = TaskHistory(
+                task_id=waiting_task.id,
+                from_status=TaskStatus.waiting.value,
+                to_status=TaskStatus.blocked.value,
+                actor="system",
+                reason=f"Dependency {task.id} was rejected",
+            )
+            db_session.add(history)
+            blocked.append(waiting_task)
+        return blocked
 
     # -- Dependency Methods ----------------------------------------------------
 
@@ -234,24 +267,27 @@ class TaskStateMachine:
         return await repo.check_dependencies_met(task.id)
 
     async def _promote_dependents(self, task: Task, repo: TaskRepository, db_session: AsyncSession) -> list[Task]:
-        """Promote WAITING tasks that depend on the completed task to READY."""
+        """Promote WAITING and BLOCKED tasks that depend on the completed task to READY."""
         waiting_tasks = await repo.find_waiting_dependents(task.id)
+        blocked_tasks = await repo.find_blocked_dependents(task.id)
+        candidates = waiting_tasks + blocked_tasks
 
         promoted: list[Task] = []
-        for waiting_task in waiting_tasks:
-            if await repo.check_dependencies_met(waiting_task.id):
-                waiting_task.status = TaskStatus.ready
-                waiting_task.version += 1
+        for candidate in candidates:
+            if await repo.check_dependencies_met(candidate.id):
+                old_status = candidate.status
+                candidate.status = TaskStatus.ready
+                candidate.version += 1
 
                 history = TaskHistory(
-                    task_id=waiting_task.id,
-                    from_status=TaskStatus.waiting.value,
+                    task_id=candidate.id,
+                    from_status=old_status.value,
                     to_status=TaskStatus.ready.value,
                     actor="system",
                     reason=f"All dependencies met (triggered by task {task.id})",
                 )
                 db_session.add(history)
-                promoted.append(waiting_task)
+                promoted.append(candidate)
 
         return promoted
 

@@ -132,6 +132,16 @@ class TaskRepository(BaseRepository):
         )
         return list(result.scalars().all())
 
+    async def find_blocked_dependents(self, task_id: uuid.UUID) -> list[Task]:
+        """Find BLOCKED tasks that depend on the given task."""
+        result = await self.db.execute(
+            select(Task).where(
+                Task.id.in_(select(task_dependencies.c.task_id).where(task_dependencies.c.dependency_id == task_id)),
+                Task.status == TaskStatus.blocked,
+            )
+        )
+        return list(result.scalars().all())
+
     async def count_by_status(self, project_id: uuid.UUID) -> dict[str, int]:
         """Count tasks grouped by status for a project."""
         result = await self.db.execute(
