@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from backend.src.core.git_ops import GitOps
+    from backend.src.core.prompt_security import PromptSigner
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,6 +28,14 @@ class TaskStateMachine:
         TaskStatus.done: {TaskStatus.rejected},
         TaskStatus.rejected: {TaskStatus.ready},
     }
+
+    def __init__(
+        self,
+        git_ops: GitOps | None = None,
+        prompt_signer: PromptSigner | None = None,
+    ) -> None:
+        self.git_ops = git_ops
+        self.prompt_signer = prompt_signer
 
     def can_transition(self, from_status: TaskStatus, to_status: TaskStatus) -> bool:
         """Check if a transition is allowed."""
@@ -122,15 +135,18 @@ class TaskStateMachine:
     ) -> None:
         """Publish task to the work queue via Redis Streams."""
         if stream_manager is not None:
-            await stream_manager.publish(
-                "tasks:queue",
-                {
-                    "task_id": str(task.id),
-                    "project_id": str(task.project_id),
-                    "priority": task.priority.value,
-                    "title": task.title,
-                },
-            )
+            message: dict[str, Any] = {
+                "task_id": str(task.id),
+                "project_id": str(task.project_id),
+                "priority": task.priority.value,
+                "title": task.title,
+            }
+            if self.prompt_signer and task.worker_prompt:
+                prompt_text = (
+                    task.worker_prompt if isinstance(task.worker_prompt, str) else json.dumps(task.worker_prompt)
+                )
+                message["signed_worker_prompt"] = self.prompt_signer.sign(prompt_text)
+            await stream_manager.publish("tasks:queue", message)
 
     async def _on_in_progress(
         self,
@@ -159,14 +175,15 @@ class TaskStateMachine:
         if reviewer_id is not None:
             task.reviewer_id = reviewer_id if isinstance(reviewer_id, uuid.UUID) else uuid.UUID(reviewer_id)
         if stream_manager is not None:
-            await stream_manager.publish(
-                "tasks:qa",
-                {
-                    "task_id": str(task.id),
-                    "project_id": str(task.project_id),
-                    "title": task.title,
-                },
-            )
+            message: dict[str, Any] = {
+                "task_id": str(task.id),
+                "project_id": str(task.project_id),
+                "title": task.title,
+            }
+            if self.prompt_signer and task.qa_prompt:
+                prompt_text = task.qa_prompt if isinstance(task.qa_prompt, str) else json.dumps(task.qa_prompt)
+                message["signed_qa_prompt"] = self.prompt_signer.sign(prompt_text)
+            await stream_manager.publish("tasks:qa", message)
 
     async def _on_done(
         self,
@@ -176,8 +193,16 @@ class TaskStateMachine:
         stream_manager: Optional[RedisStreamManager] = None,
         **kwargs: Any,
     ) -> None:
-        """Set completed_at and promote dependent tasks."""
+        """Set completed_at, commit via GitOps, and promote dependent tasks."""
         task.completed_at = datetime.now(timezone.utc)
+        if self.git_ops and task.branch_name:
+            try:
+                commit_hash = await self.git_ops.commit_task(
+                    str(task.id), task.title, task.branch_name
+                )
+                task.commit_hash = commit_hash
+            except RuntimeError:
+                pass  # Git failure should not block task completion
         if db_session is not None:
             repo = TaskRepository(db_session)
             await self._promote_dependents(task, repo, db_session)
@@ -190,10 +215,16 @@ class TaskStateMachine:
         stream_manager: Optional[RedisStreamManager] = None,
         **kwargs: Any,
     ) -> None:
-        """Set error_message from the rejection reason."""
+        """Set error_message from the rejection reason, and revert GitOps commit if present."""
         reason = kwargs.get("reason")
         if reason is not None:
             task.error_message = reason
+        if self.git_ops and task.commit_hash:
+            try:
+                await self.git_ops.revert_task(task.commit_hash)
+                task.commit_hash = None
+            except RuntimeError:
+                pass  # Git failure should not block rejection
 
     # -- Dependency Methods ----------------------------------------------------
 
