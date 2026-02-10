@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Optional
 if TYPE_CHECKING:
     from backend.src.core.git_ops import GitOps
     from backend.src.core.prompt_security import PromptSigner
+    from backend.src.utils.worker_registry import WorkerRegistry
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,9 +35,11 @@ class TaskStateMachine:
         self,
         git_ops: GitOps | None = None,
         prompt_signer: PromptSigner | None = None,
+        worker_registry: WorkerRegistry | None = None,
     ) -> None:
         self.git_ops = git_ops
         self.prompt_signer = prompt_signer
+        self.worker_registry = worker_registry
 
     def can_transition(self, from_status: TaskStatus, to_status: TaskStatus) -> bool:
         """Check if a transition is allowed."""
@@ -164,6 +167,12 @@ class TaskStateMachine:
             task.worker_id = worker_id if isinstance(worker_id, uuid.UUID) else uuid.UUID(worker_id)
         task.started_at = datetime.now(timezone.utc)
 
+        if self.worker_registry and worker_id is not None:
+            try:
+                await self.worker_registry.set_busy(str(worker_id), str(task.id))
+            except Exception:
+                pass  # Redis failure should not block state transition
+
     async def _on_review(
         self,
         task: Task,
@@ -187,6 +196,12 @@ class TaskStateMachine:
                 message["signed_qa_prompt"] = self.prompt_signer.sign(prompt_text)
             await stream_manager.publish("tasks:qa", message)
 
+        if self.worker_registry and task.worker_id:
+            try:
+                await self.worker_registry.set_idle(str(task.worker_id))
+            except Exception:
+                pass  # Redis failure should not block state transition
+
     async def _on_done(
         self,
         task: Task,
@@ -208,6 +223,12 @@ class TaskStateMachine:
         if db_session is not None:
             repo = TaskRepository(db_session)
             await self._promote_dependents(task, repo, db_session)
+
+        if self.worker_registry and task.reviewer_id:
+            try:
+                await self.worker_registry.set_idle(str(task.reviewer_id))
+            except Exception:
+                pass  # Redis failure should not block state transition
 
     async def _on_rejected(
         self,

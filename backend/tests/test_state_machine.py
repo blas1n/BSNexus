@@ -640,3 +640,84 @@ async def test_on_done_promotes_blocked_dependents(
     assert task.status == TaskStatus.done
     assert blocked_dep.status == TaskStatus.ready
     assert blocked_dep.version == 2
+
+
+# ── Worker Registry integration tests ─────────────────────────────────────
+
+
+async def test_on_in_progress_sets_worker_busy(
+    mock_db: AsyncMock, mock_stream: AsyncMock,
+) -> None:
+    mock_registry = AsyncMock()
+    sm = TaskStateMachine(worker_registry=mock_registry)
+    task = make_task(status=TaskStatus.queued)
+    worker_id = uuid.uuid4()
+
+    await sm.transition(
+        task, TaskStatus.in_progress, db_session=mock_db, stream_manager=mock_stream, worker_id=str(worker_id)
+    )
+
+    mock_registry.set_busy.assert_called_once_with(str(worker_id), str(task.id))
+
+
+async def test_on_review_sets_executor_idle(
+    mock_db: AsyncMock, mock_stream: AsyncMock,
+) -> None:
+    mock_registry = AsyncMock()
+    sm = TaskStateMachine(worker_registry=mock_registry)
+    worker_id = uuid.uuid4()
+    task = make_task(status=TaskStatus.in_progress, worker_id=worker_id)
+
+    await sm.transition(task, TaskStatus.review, db_session=mock_db, stream_manager=mock_stream)
+
+    mock_registry.set_idle.assert_called_once_with(str(worker_id))
+
+
+async def test_on_done_sets_reviewer_idle(
+    mock_db: AsyncMock, mock_stream: AsyncMock,
+) -> None:
+    mock_registry = AsyncMock()
+    sm = TaskStateMachine(worker_registry=mock_registry)
+    reviewer_id = uuid.uuid4()
+    task = make_task(status=TaskStatus.review, reviewer_id=reviewer_id)
+
+    with patch("backend.src.core.state_machine.TaskRepository") as MockRepo:
+        mock_repo_instance = AsyncMock()
+        mock_repo_instance.find_waiting_dependents = AsyncMock(return_value=[])
+        mock_repo_instance.find_blocked_dependents = AsyncMock(return_value=[])
+        MockRepo.return_value = mock_repo_instance
+
+        await sm.transition(task, TaskStatus.done, db_session=mock_db, stream_manager=mock_stream)
+
+    mock_registry.set_idle.assert_called_once_with(str(reviewer_id))
+
+
+async def test_worker_registry_none_backward_compat(
+    mock_db: AsyncMock, mock_stream: AsyncMock,
+) -> None:
+    sm = TaskStateMachine()  # No worker_registry
+    task = make_task(status=TaskStatus.queued)
+    worker_id = uuid.uuid4()
+
+    # Should not raise even without worker_registry
+    await sm.transition(
+        task, TaskStatus.in_progress, db_session=mock_db, stream_manager=mock_stream, worker_id=str(worker_id)
+    )
+    assert task.status == TaskStatus.in_progress
+
+
+async def test_worker_registry_failure_does_not_block_transition(
+    mock_db: AsyncMock, mock_stream: AsyncMock,
+) -> None:
+    mock_registry = AsyncMock()
+    mock_registry.set_busy = AsyncMock(side_effect=Exception("Redis down"))
+    sm = TaskStateMachine(worker_registry=mock_registry)
+    task = make_task(status=TaskStatus.queued)
+    worker_id = uuid.uuid4()
+
+    await sm.transition(
+        task, TaskStatus.in_progress, db_session=mock_db, stream_manager=mock_stream, worker_id=str(worker_id)
+    )
+
+    assert task.status == TaskStatus.in_progress
+    assert task.worker_id == worker_id
