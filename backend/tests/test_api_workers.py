@@ -57,7 +57,7 @@ async def api_client(mock_redis: AsyncMock) -> AsyncGenerator[AsyncClient]:
 async def test_register_worker_success(api_client: AsyncClient, mock_redis: AsyncMock) -> None:
     """POST /api/workers/register should return worker_id, token, and stream info."""
     response = await api_client.post(
-        "/api/workers/register",
+        "/api/v1/workers/register",
         json={
             "platform": "linux",
             "capabilities": {"python": True},
@@ -86,7 +86,7 @@ async def test_register_worker_success(api_client: AsyncClient, mock_redis: Asyn
 async def test_register_worker_auto_name(api_client: AsyncClient, mock_redis: AsyncMock) -> None:
     """When name is not provided, a default name should be generated."""
     response = await api_client.post(
-        "/api/workers/register",
+        "/api/v1/workers/register",
         json={"platform": "darwin"},
     )
 
@@ -120,7 +120,7 @@ async def test_heartbeat_with_valid_token(api_client: AsyncClient, mock_redis: A
     }
 
     response = await api_client.post(
-        f"/api/workers/{worker_id}/heartbeat",
+        f"/api/v1/workers/{worker_id}/heartbeat",
         headers={"Authorization": "Bearer valid-token-here"},
     )
 
@@ -138,7 +138,7 @@ async def test_heartbeat_with_invalid_token(api_client: AsyncClient, mock_redis:
     mock_redis.get.return_value = None
 
     response = await api_client.post(
-        f"/api/workers/{worker_id}/heartbeat",
+        f"/api/v1/workers/{worker_id}/heartbeat",
         headers={"Authorization": "Bearer bad-token"},
     )
 
@@ -150,7 +150,7 @@ async def test_heartbeat_missing_auth_header(api_client: AsyncClient) -> None:
     """Heartbeat without Authorization header should return 401."""
     worker_id = str(uuid.uuid4())
 
-    response = await api_client.post(f"/api/workers/{worker_id}/heartbeat")
+    response = await api_client.post(f"/api/v1/workers/{worker_id}/heartbeat")
 
     assert response.status_code == 401
     assert "Missing or invalid token" in response.json()["detail"]
@@ -165,7 +165,7 @@ async def test_heartbeat_token_mismatch(api_client: AsyncClient, mock_redis: Asy
     mock_redis.get.return_value = other_worker_id
 
     response = await api_client.post(
-        f"/api/workers/{worker_id}/heartbeat",
+        f"/api/v1/workers/{worker_id}/heartbeat",
         headers={"Authorization": "Bearer some-token"},
     )
 
@@ -207,7 +207,7 @@ async def test_list_workers(api_client: AsyncClient, mock_redis: AsyncMock) -> N
 
     mock_redis.hgetall = AsyncMock(side_effect=hgetall_side_effect)
 
-    response = await api_client.get("/api/workers/")
+    response = await api_client.get("/api/v1/workers/")
 
     assert response.status_code == 200
     data = response.json()
@@ -220,7 +220,7 @@ async def test_list_workers_empty(api_client: AsyncClient, mock_redis: AsyncMock
     """GET /api/workers/ with no registered workers returns empty list."""
     mock_redis.scan_iter = MagicMock(return_value=_async_iter([]))
 
-    response = await api_client.get("/api/workers/")
+    response = await api_client.get("/api/v1/workers/")
 
     assert response.status_code == 200
     assert response.json() == []
@@ -234,7 +234,7 @@ async def test_deregister_worker(api_client: AsyncClient, mock_redis: AsyncMock)
     worker_id = str(uuid.uuid4())
     mock_redis.hget.return_value = "some-token"
 
-    response = await api_client.delete(f"/api/workers/{worker_id}")
+    response = await api_client.delete(f"/api/v1/workers/{worker_id}")
 
     assert response.status_code == 200
     data = response.json()

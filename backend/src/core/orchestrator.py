@@ -30,10 +30,32 @@ class PMOrchestrator:
     async def start(self, project_id: uuid.UUID, db_session_factory: Any) -> None:
         """Start orchestration for a project."""
         self._running = True
+        # Promote dependency-free waiting tasks before entering the main loops
+        await self._promote_waiting_tasks(project_id, db_session_factory)
         await asyncio.gather(
             self._scheduling_loop(project_id, db_session_factory),
             self._results_loop(project_id, db_session_factory),
         )
+
+    async def _promote_waiting_tasks(self, project_id: uuid.UUID, db_session_factory: Any) -> None:
+        """Promote WAITING tasks whose dependencies are all met to READY."""
+        try:
+            async with db_session_factory() as db:
+                repo = TaskRepository(db)
+                waiting_tasks = await repo.list_by_project(project_id, status=TaskStatus.waiting, limit=500)
+                for task in waiting_tasks:
+                    if await repo.check_dependencies_met(task.id):
+                        await self.state_machine.transition(
+                            task=task,
+                            new_status=TaskStatus.ready,
+                            reason="All dependencies met",
+                            actor="system",
+                            db_session=db,
+                            stream_manager=self.stream_manager,
+                        )
+                await db.commit()
+        except Exception as e:
+            print(f"Promote waiting tasks error: {e}")
 
     async def stop(self) -> None:
         """Stop orchestration."""

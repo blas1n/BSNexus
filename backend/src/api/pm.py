@@ -3,16 +3,16 @@ from __future__ import annotations
 import asyncio
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy.ext.asyncio import AsyncSession
-
+from backend.src import models
 from backend.src.core.orchestrator import PMOrchestrator
 from backend.src.core.state_machine import TaskStateMachine
 from backend.src.repositories.task_repository import TaskRepository
 from backend.src.storage.database import async_session, get_db
 from backend.src.utils.worker_registry import WorkerRegistry
+from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy.ext.asyncio import AsyncSession
 
-router = APIRouter(prefix="/api/pm", tags=["pm"])
+router = APIRouter(prefix="/api/v1/pm", tags=["pm"])
 
 
 # -- Dependency helpers --------------------------------------------------------
@@ -38,7 +38,7 @@ def _ensure_orchestrators(request: Request) -> dict[str, dict]:
 # -- Endpoints ----------------------------------------------------------------
 
 
-@router.post("/start/{project_id}")
+@router.post("/{project_id}/start")
 async def start_orchestration(
     project_id: uuid.UUID,
     request: Request,
@@ -48,7 +48,9 @@ async def start_orchestration(
     pid = str(project_id)
 
     if pid in orchestrators and orchestrators[pid].get("running"):
-        raise HTTPException(status_code=409, detail="Orchestrator already running for this project")
+        raise HTTPException(
+            status_code=409, detail="Orchestrator already running for this project"
+        )
 
     stream_manager = _get_stream_manager(request)
     registry = _get_registry(request)
@@ -71,7 +73,7 @@ async def start_orchestration(
     return {"detail": "Orchestration started", "project_id": pid}
 
 
-@router.post("/pause/{project_id}")
+@router.post("/{project_id}/pause")
 async def pause_orchestration(
     project_id: uuid.UUID,
     request: Request,
@@ -82,7 +84,9 @@ async def pause_orchestration(
 
     entry = orchestrators.get(pid)
     if not entry or not entry.get("running"):
-        raise HTTPException(status_code=404, detail="No running orchestrator for this project")
+        raise HTTPException(
+            status_code=404, detail="No running orchestrator for this project"
+        )
 
     orchestrator: PMOrchestrator = entry["orchestrator"]
     await orchestrator.stop()
@@ -91,7 +95,7 @@ async def pause_orchestration(
     return {"detail": "Orchestration paused", "project_id": pid}
 
 
-@router.get("/status/{project_id}")
+@router.get("/{project_id}/status")
 async def get_orchestration_status(
     project_id: uuid.UUID,
     request: Request,
@@ -126,7 +130,33 @@ async def get_orchestration_status(
     }
 
 
-@router.post("/queue-next/{project_id}")
+@router.post("/{project_id}/promote-waiting")
+async def promote_waiting_tasks(
+    project_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Promote WAITING tasks with all dependencies met (or none) to READY."""
+    repo = TaskRepository(db)
+    state_machine = TaskStateMachine()
+    waiting_tasks = await repo.list_by_project(project_id, status=models.TaskStatus.waiting, limit=500)
+
+    promoted: list[dict] = []
+    for task in waiting_tasks:
+        if await repo.check_dependencies_met(task.id):
+            await state_machine.transition(
+                task=task,
+                new_status=models.TaskStatus.ready,
+                reason="All dependencies met",
+                actor="system",
+                db_session=db,
+            )
+            promoted.append({"task_id": str(task.id), "title": task.title})
+
+    await db.commit()
+    return {"detail": f"Promoted {len(promoted)} tasks to ready", "promoted": promoted}
+
+
+@router.post("/{project_id}/queue-next")
 async def queue_next_task(
     project_id: uuid.UUID,
     request: Request,

@@ -3,16 +3,15 @@ from __future__ import annotations
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from backend.src import models, schemas
 from backend.src.core.state_machine import TaskStateMachine
 from backend.src.models import Task
 from backend.src.repositories.task_repository import TaskRepository
 from backend.src.storage.database import get_db
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from sqlalchemy.ext.asyncio import AsyncSession
 
-router = APIRouter(prefix="/api/tasks", tags=["tasks"])
+router = APIRouter(prefix="/api/v1/tasks", tags=["tasks"])
 
 state_machine = TaskStateMachine()
 
@@ -65,7 +64,9 @@ async def create_task(
     if task_data.depends_on:
         missing = await repo.validate_dependencies_exist(task_data.depends_on)
         if missing:
-            raise HTTPException(status_code=400, detail=f"Dependency tasks not found: {missing}")
+            raise HTTPException(
+                status_code=400, detail=f"Dependency tasks not found: {missing}"
+            )
 
         # Detect circular dependencies (use a temporary UUID since the task doesn't exist yet)
         temp_id = uuid.uuid4()
@@ -81,7 +82,11 @@ async def create_task(
         priority=models.TaskPriority(task_data.priority.value),
         worker_prompt={"prompt": task_data.worker_prompt},
         qa_prompt={"prompt": task_data.qa_prompt},
-        status=models.TaskStatus.waiting if task_data.depends_on else models.TaskStatus.ready,
+        status=(
+            models.TaskStatus.waiting
+            if task_data.depends_on
+            else models.TaskStatus.ready
+        ),
         version=1,
     )
     await repo.add(task)
@@ -107,7 +112,9 @@ async def get_task(
 ) -> schemas.TaskResponse:
     """Get a task by ID."""
     repo = TaskRepository(db)
-    task = await repo.get_by_id(task_id, load_depends=True, load_history=include_history)
+    task = await repo.get_by_id(
+        task_id, load_depends=True, load_history=include_history
+    )
 
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -137,7 +144,10 @@ async def update_task(
             )
 
     if task.status not in (models.TaskStatus.waiting, models.TaskStatus.ready):
-        raise HTTPException(status_code=400, detail="Task can only be updated in waiting or ready status")
+        raise HTTPException(
+            status_code=400,
+            detail="Task can only be updated in waiting or ready status",
+        )
 
     update_data = task_data.model_dump(exclude_unset=True, exclude={"expected_version"})
     for field, value in update_data.items():

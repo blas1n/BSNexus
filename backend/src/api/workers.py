@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Request
-
 from backend.src.queue.streams import RedisStreamManager
 from backend.src.schemas import WorkerRegister
 from backend.src.utils.worker_registry import WorkerRegistry
+from fastapi import APIRouter, Depends, HTTPException, Request
 
-router = APIRouter(prefix="/api/workers", tags=["workers"])
+router = APIRouter(prefix="/api/v1/workers", tags=["workers"])
 
 
 # -- Dependency helpers --------------------------------------------------------
@@ -99,7 +98,7 @@ async def heartbeat_worker(
     }
 
 
-@router.get("/")
+@router.get("")
 async def list_workers(request: Request) -> list[dict]:
     """Return all active (non-expired) workers."""
     registry = _get_registry(request)

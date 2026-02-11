@@ -22,7 +22,7 @@ def _async_iter(items: list):
 async def _create_project(client: AsyncClient) -> dict:
     """Create a project via API and return the response data."""
     response = await client.post(
-        "/api/projects/",
+        "/api/v1/projects/",
         json={
             "name": "Integration Test Project",
             "description": "Project for integration testing",
@@ -36,7 +36,7 @@ async def _create_project(client: AsyncClient) -> dict:
 async def _create_phase(client: AsyncClient, project_id: str) -> dict:
     """Create a phase via API and return the response data."""
     response = await client.post(
-        f"/api/projects/{project_id}/phases",
+        f"/api/v1/projects/{project_id}/phases",
         json={
             "name": "Integration Phase",
             "description": "Phase for integration testing",
@@ -57,7 +57,7 @@ async def _create_task(
 ) -> dict:
     """Create a task via API and return the response data."""
     response = await client.post(
-        "/api/tasks/",
+        "/api/v1/tasks/",
         json={
             "project_id": project_id,
             "phase_id": phase_id,
@@ -76,7 +76,7 @@ async def _create_task(
 async def _transition_task(client: AsyncClient, task_id: str, new_status: str, actor: str = "test") -> dict:
     """Transition a task to a new status and return the response data."""
     response = await client.post(
-        f"/api/tasks/{task_id}/transition",
+        f"/api/v1/tasks/{task_id}/transition",
         json={"new_status": new_status, "actor": actor},
     )
     assert response.status_code == 200
@@ -94,13 +94,13 @@ async def test_project_lifecycle(client: AsyncClient):
     assert project["status"] == "design"
 
     # 2. Verify project appears in list
-    list_resp = await client.get("/api/projects/")
+    list_resp = await client.get("/api/v1/projects/")
     assert list_resp.status_code == 200
     project_ids = {p["id"] for p in list_resp.json()}
     assert project["id"] in project_ids
 
     # 3. Get project by ID
-    get_resp = await client.get(f"/api/projects/{project['id']}")
+    get_resp = await client.get(f"/api/v1/projects/{project['id']}")
     assert get_resp.status_code == 200
     assert get_resp.json()["id"] == project["id"]
 
@@ -132,7 +132,7 @@ async def test_project_lifecycle(client: AsyncClient):
     assert transition["previous_status"] == "review"
 
     # 7. Verify final task state
-    final_resp = await client.get(f"/api/tasks/{task['id']}")
+    final_resp = await client.get(f"/api/v1/tasks/{task['id']}")
     assert final_resp.status_code == 200
     final_task = final_resp.json()
     assert final_task["status"] == "done"
@@ -163,12 +163,12 @@ async def test_dependency_chain(client: AsyncClient):
     await _transition_task(client, task_a["id"], "done")
 
     # After A is done, B should be promoted to ready
-    task_b_resp = await client.get(f"/api/tasks/{task_b['id']}")
+    task_b_resp = await client.get(f"/api/v1/tasks/{task_b['id']}")
     assert task_b_resp.status_code == 200
     assert task_b_resp.json()["status"] == "ready"
 
     # C should still be waiting (B not done yet)
-    task_c_resp = await client.get(f"/api/tasks/{task_c['id']}")
+    task_c_resp = await client.get(f"/api/v1/tasks/{task_c['id']}")
     assert task_c_resp.status_code == 200
     assert task_c_resp.json()["status"] == "waiting"
 
@@ -179,7 +179,7 @@ async def test_dependency_chain(client: AsyncClient):
     await _transition_task(client, task_b["id"], "done")
 
     # After B is done, C should be promoted to ready
-    task_c_resp = await client.get(f"/api/tasks/{task_c['id']}")
+    task_c_resp = await client.get(f"/api/v1/tasks/{task_c['id']}")
     assert task_c_resp.status_code == 200
     assert task_c_resp.json()["status"] == "ready"
 
@@ -210,7 +210,7 @@ async def test_board_snapshot(client: AsyncClient, db_session, mock_stream_manag
     assert task_waiting["status"] == "waiting"
 
     # Get board state
-    board_resp = await client.get(f"/api/board/{project['id']}")
+    board_resp = await client.get(f"/api/v1/board/{project['id']}")
     assert board_resp.status_code == 200
     board = board_resp.json()
 
@@ -220,16 +220,16 @@ async def test_board_snapshot(client: AsyncClient, db_session, mock_stream_manag
     assert "stats" in board
     assert "workers" in board
 
-    # Verify columns contain tasks in correct states
+    # Verify columns contain tasks in correct states (BoardColumn format)
     columns = board["columns"]
-    assert len(columns["ready"]) == 1
-    assert columns["ready"][0]["title"] == "Ready Task"
+    assert len(columns["ready"]["tasks"]) == 1
+    assert columns["ready"]["tasks"][0]["title"] == "Ready Task"
 
-    assert len(columns["queued"]) == 1
-    assert columns["queued"][0]["title"] == "Queued Task"
+    assert len(columns["queued"]["tasks"]) == 1
+    assert columns["queued"]["tasks"][0]["title"] == "Queued Task"
 
-    assert len(columns["waiting"]) == 1
-    assert columns["waiting"][0]["title"] == "Waiting Task"
+    assert len(columns["waiting"]["tasks"]) == 1
+    assert columns["waiting"]["tasks"][0]["title"] == "Waiting Task"
 
     # Verify stats
     stats = board["stats"]

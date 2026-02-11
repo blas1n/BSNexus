@@ -42,7 +42,7 @@ async def test_create_task_success(client: AsyncClient, db_session):
     project, phase = await create_project_and_phase(db_session)
 
     response = await client.post(
-        "/api/tasks/",
+        "/api/v1/tasks/",
         json={
             "project_id": str(project.id),
             "phase_id": str(phase.id),
@@ -70,7 +70,7 @@ async def test_create_task_dependency_not_found_400(client: AsyncClient, db_sess
     fake_dep_id = str(uuid.uuid4())
 
     response = await client.post(
-        "/api/tasks/",
+        "/api/v1/tasks/",
         json={
             "project_id": str(project.id),
             "phase_id": str(phase.id),
@@ -93,7 +93,7 @@ async def test_get_task_success(client: AsyncClient, db_session):
 
     # Create a task via API
     create_response = await client.post(
-        "/api/tasks/",
+        "/api/v1/tasks/",
         json={
             "project_id": str(project.id),
             "phase_id": str(phase.id),
@@ -107,7 +107,7 @@ async def test_get_task_success(client: AsyncClient, db_session):
     )
     task_id = create_response.json()["id"]
 
-    response = await client.get(f"/api/tasks/{task_id}")
+    response = await client.get(f"/api/v1/tasks/{task_id}")
 
     assert response.status_code == 200
     data = response.json()
@@ -118,7 +118,7 @@ async def test_get_task_success(client: AsyncClient, db_session):
 async def test_get_task_not_found_404(client: AsyncClient, db_session):
     """GET /api/tasks/{random_uuid} returns 404."""
     random_id = str(uuid.uuid4())
-    response = await client.get(f"/api/tasks/{random_id}")
+    response = await client.get(f"/api/v1/tasks/{random_id}")
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Task not found"
@@ -131,7 +131,7 @@ async def test_update_task_waiting_status(client: AsyncClient, db_session):
     # Create a task with a dependency so it starts in WAITING status
     # First create the dependency task
     dep_response = await client.post(
-        "/api/tasks/",
+        "/api/v1/tasks/",
         json={
             "project_id": str(project.id),
             "phase_id": str(phase.id),
@@ -147,7 +147,7 @@ async def test_update_task_waiting_status(client: AsyncClient, db_session):
 
     # Create task that depends on the first one (will be WAITING)
     create_response = await client.post(
-        "/api/tasks/",
+        "/api/v1/tasks/",
         json={
             "project_id": str(project.id),
             "phase_id": str(phase.id),
@@ -163,7 +163,7 @@ async def test_update_task_waiting_status(client: AsyncClient, db_session):
     assert create_response.json()["status"] == "waiting"
 
     response = await client.patch(
-        f"/api/tasks/{task_id}",
+        f"/api/v1/tasks/{task_id}",
         json={"title": "Updated Title", "priority": "critical"},
     )
 
@@ -194,7 +194,7 @@ async def test_update_task_in_progress_400(client: AsyncClient, db_session):
     await db_session.commit()
 
     response = await client.patch(
-        f"/api/tasks/{task.id}",
+        f"/api/v1/tasks/{task.id}",
         json={"title": "Should Fail"},
     )
 
@@ -208,7 +208,7 @@ async def test_transition_task_valid(client: AsyncClient, db_session):
 
     # Create a task via API (no deps, so it starts as READY)
     create_response = await client.post(
-        "/api/tasks/",
+        "/api/v1/tasks/",
         json={
             "project_id": str(project.id),
             "phase_id": str(phase.id),
@@ -225,7 +225,7 @@ async def test_transition_task_valid(client: AsyncClient, db_session):
 
     # Transition READY -> QUEUED
     response = await client.post(
-        f"/api/tasks/{task_id}/transition",
+        f"/api/v1/tasks/{task_id}/transition",
         json={"new_status": "queued", "actor": "test"},
     )
 
@@ -241,7 +241,7 @@ async def test_transition_task_invalid_400(client: AsyncClient, db_session):
 
     # Create a task (starts as READY)
     create_response = await client.post(
-        "/api/tasks/",
+        "/api/v1/tasks/",
         json={
             "project_id": str(project.id),
             "phase_id": str(phase.id),
@@ -257,7 +257,7 @@ async def test_transition_task_invalid_400(client: AsyncClient, db_session):
 
     # Try invalid transition READY -> DONE
     response = await client.post(
-        f"/api/tasks/{task_id}/transition",
+        f"/api/v1/tasks/{task_id}/transition",
         json={"new_status": "done", "actor": "test"},
     )
 
@@ -272,7 +272,7 @@ async def test_list_project_tasks(client: AsyncClient, db_session):
     # Create two tasks
     for title in ["Task One", "Task Two"]:
         await client.post(
-            "/api/tasks/",
+            "/api/v1/tasks/",
             json={
                 "project_id": str(project.id),
                 "phase_id": str(phase.id),
@@ -285,7 +285,7 @@ async def test_list_project_tasks(client: AsyncClient, db_session):
             },
         )
 
-    response = await client.get(f"/api/tasks/by-project/{project.id}")
+    response = await client.get(f"/api/v1/tasks/by-project/{project.id}")
 
     assert response.status_code == 200
     data = response.json()
@@ -300,7 +300,7 @@ async def test_transition_with_matching_version(client: AsyncClient, db_session)
     project, phase = await create_project_and_phase(db_session)
 
     create_response = await client.post(
-        "/api/tasks/",
+        "/api/v1/tasks/",
         json={
             "project_id": str(project.id),
             "phase_id": str(phase.id),
@@ -316,7 +316,7 @@ async def test_transition_with_matching_version(client: AsyncClient, db_session)
     version = create_response.json()["version"]
 
     response = await client.post(
-        f"/api/tasks/{task_id}/transition",
+        f"/api/v1/tasks/{task_id}/transition",
         json={"new_status": "queued", "actor": "test", "expected_version": version},
     )
 
@@ -329,7 +329,7 @@ async def test_transition_with_mismatched_version_409(client: AsyncClient, db_se
     project, phase = await create_project_and_phase(db_session)
 
     create_response = await client.post(
-        "/api/tasks/",
+        "/api/v1/tasks/",
         json={
             "project_id": str(project.id),
             "phase_id": str(phase.id),
@@ -344,7 +344,7 @@ async def test_transition_with_mismatched_version_409(client: AsyncClient, db_se
     task_id = create_response.json()["id"]
 
     response = await client.post(
-        f"/api/tasks/{task_id}/transition",
+        f"/api/v1/tasks/{task_id}/transition",
         json={"new_status": "queued", "actor": "test", "expected_version": 999},
     )
 
@@ -358,7 +358,7 @@ async def test_transition_without_expected_version(client: AsyncClient, db_sessi
     project, phase = await create_project_and_phase(db_session)
 
     create_response = await client.post(
-        "/api/tasks/",
+        "/api/v1/tasks/",
         json={
             "project_id": str(project.id),
             "phase_id": str(phase.id),
@@ -373,7 +373,7 @@ async def test_transition_without_expected_version(client: AsyncClient, db_sessi
     task_id = create_response.json()["id"]
 
     response = await client.post(
-        f"/api/tasks/{task_id}/transition",
+        f"/api/v1/tasks/{task_id}/transition",
         json={"new_status": "queued", "actor": "test"},
     )
 
@@ -386,7 +386,7 @@ async def test_update_with_mismatched_version_409(client: AsyncClient, db_sessio
 
     # Create a task with dependency so it's in WAITING status (updatable)
     dep_response = await client.post(
-        "/api/tasks/",
+        "/api/v1/tasks/",
         json={
             "project_id": str(project.id),
             "phase_id": str(phase.id),
@@ -401,7 +401,7 @@ async def test_update_with_mismatched_version_409(client: AsyncClient, db_sessio
     dep_id = dep_response.json()["id"]
 
     create_response = await client.post(
-        "/api/tasks/",
+        "/api/v1/tasks/",
         json={
             "project_id": str(project.id),
             "phase_id": str(phase.id),
@@ -416,7 +416,7 @@ async def test_update_with_mismatched_version_409(client: AsyncClient, db_sessio
     task_id = create_response.json()["id"]
 
     response = await client.patch(
-        f"/api/tasks/{task_id}",
+        f"/api/v1/tasks/{task_id}",
         json={"title": "New Title", "expected_version": 999},
     )
 
@@ -429,7 +429,7 @@ async def test_409_response_contains_current_version(client: AsyncClient, db_ses
     project, phase = await create_project_and_phase(db_session)
 
     create_response = await client.post(
-        "/api/tasks/",
+        "/api/v1/tasks/",
         json={
             "project_id": str(project.id),
             "phase_id": str(phase.id),
@@ -445,7 +445,7 @@ async def test_409_response_contains_current_version(client: AsyncClient, db_ses
     current_version = create_response.json()["version"]
 
     response = await client.post(
-        f"/api/tasks/{task_id}/transition",
+        f"/api/v1/tasks/{task_id}/transition",
         json={"new_status": "queued", "actor": "test", "expected_version": 999},
     )
 

@@ -44,7 +44,7 @@ async def test_worker_registration_and_list():
     ) as api_client:
         # Register a worker
         register_resp = await api_client.post(
-            "/api/workers/register",
+            "/api/v1/workers/register",
             json={
                 "platform": "linux",
                 "capabilities": {"python": True},
@@ -80,7 +80,7 @@ async def test_worker_registration_and_list():
             "current_task_id": "",
         })
 
-        list_resp = await api_client.get("/api/workers/")
+        list_resp = await api_client.get("/api/v1/workers/")
         assert list_resp.status_code == 200
         workers = list_resp.json()
         assert len(workers) == 1
@@ -111,7 +111,7 @@ async def test_worker_heartbeat():
     ) as api_client:
         # Register a worker
         register_resp = await api_client.post(
-            "/api/workers/register",
+            "/api/v1/workers/register",
             json={
                 "platform": "darwin",
                 "capabilities": {"node": True},
@@ -140,7 +140,7 @@ async def test_worker_heartbeat():
 
         # Send heartbeat
         heartbeat_resp = await api_client.post(
-            f"/api/workers/{worker_id}/heartbeat",
+            f"/api/v1/workers/{worker_id}/heartbeat",
             headers={"Authorization": f"Bearer {token}"},
         )
         assert heartbeat_resp.status_code == 200

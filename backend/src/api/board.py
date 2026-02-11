@@ -4,18 +4,16 @@ import asyncio
 import json
 from typing import AsyncGenerator
 
-from fastapi import APIRouter, Depends, Request, WebSocket, WebSocketDisconnect
-from sqlalchemy.ext.asyncio import AsyncSession
-from sse_starlette.sse import EventSourceResponse
-
 import redis.asyncio as aioredis
-
 from backend.src import models, schemas
 from backend.src.repositories.task_repository import TaskRepository
 from backend.src.storage.database import get_db
 from backend.src.utils.worker_registry import WorkerRegistry
+from fastapi import APIRouter, Depends, Request, WebSocket, WebSocketDisconnect
+from sqlalchemy.ext.asyncio import AsyncSession
+from sse_starlette.sse import EventSourceResponse
 
-router = APIRouter(prefix="/api/board", tags=["board"])
+router = APIRouter(prefix="/api/v1/board", tags=["board"])
 
 
 def _build_task_response(task: models.Task) -> schemas.TaskResponse:
@@ -83,7 +81,7 @@ async def _get_board_data(
 
     return {
         "project_id": project_id,
-        "columns": columns,
+        "columns": {status: {"tasks": task_list} for status, task_list in columns.items()},
         "stats": stats,
         "workers": {"total": len(workers), "idle": idle, "busy": busy},
     }
@@ -119,7 +117,10 @@ async def _board_event_generator(
                         last_id = msg_id
                         event_project_id = data.get("project_id", "")
                         if event_project_id == project_id:
-                            yield {"event": data.get("event", "update"), "data": json.dumps(data)}
+                            yield {
+                                "event": data.get("event", "update"),
+                                "data": json.dumps(data),
+                            }
         except asyncio.CancelledError:
             break
 
@@ -134,12 +135,8 @@ async def board_events(
     return EventSourceResponse(_board_event_generator(project_id, redis_client))
 
 
-@router.websocket("/ws/{project_id}")
-async def board_websocket(
-    websocket: WebSocket,
-    project_id: str,
-) -> None:
-    """WebSocket endpoint for real-time board updates."""
+async def board_websocket_handler(websocket: WebSocket, project_id: str) -> None:
+    """WebSocket handler for real-time board updates. Registered on the app in main.py."""
     await websocket.accept()
     redis_client: aioredis.Redis = websocket.app.state.redis
 

@@ -8,6 +8,7 @@ interface UseWebSocketOptions {
   onError?: (error: Event) => void
   reconnect?: boolean
   reconnectInterval?: number
+  maxReconnectInterval?: number
   autoConnect?: boolean
 }
 
@@ -18,52 +19,73 @@ export function useWebSocket({
   onClose,
   onError,
   reconnect = true,
-  reconnectInterval = 3000,
+  reconnectInterval = 1000,
+  maxReconnectInterval = 30000,
   autoConnect = true,
 }: UseWebSocketOptions) {
   const wsRef = useRef<WebSocket | null>(null)
   const [isConnected, setIsConnected] = useState(false)
   const reconnectRef = useRef(reconnect)
-  const connectRef = useRef<() => void>(() => {})
+  const retriesRef = useRef(0)
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Store callbacks in refs so connect() doesn't depend on them
+  const onMessageRef = useRef(onMessage)
+  const onOpenRef = useRef(onOpen)
+  const onCloseRef = useRef(onClose)
+  const onErrorRef = useRef(onError)
+
+  useEffect(() => { onMessageRef.current = onMessage }, [onMessage])
+  useEffect(() => { onOpenRef.current = onOpen }, [onOpen])
+  useEffect(() => { onCloseRef.current = onClose }, [onClose])
+  useEffect(() => { onErrorRef.current = onError }, [onError])
 
   useEffect(() => {
     reconnectRef.current = reconnect
   }, [reconnect])
 
   const connect = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) return
+    // Don't open a new connection if one is already open or connecting
+    if (
+      wsRef.current?.readyState === WebSocket.OPEN ||
+      wsRef.current?.readyState === WebSocket.CONNECTING
+    ) {
+      return
+    }
 
     const ws = new WebSocket(url)
 
     ws.onopen = () => {
+      retriesRef.current = 0
       setIsConnected(true)
-      onOpen?.()
+      onOpenRef.current?.()
     }
 
     ws.onmessage = (event) => {
       const data = JSON.parse(event.data)
-      onMessage(data)
+      onMessageRef.current(data)
     }
 
     ws.onclose = () => {
       setIsConnected(false)
       wsRef.current = null
-      onClose?.()
+      onCloseRef.current?.()
       if (reconnectRef.current) {
-        setTimeout(() => connectRef.current(), reconnectInterval)
+        const delay = Math.min(
+          reconnectInterval * Math.pow(2, retriesRef.current),
+          maxReconnectInterval,
+        )
+        retriesRef.current += 1
+        reconnectTimerRef.current = setTimeout(() => connect(), delay)
       }
     }
 
     ws.onerror = (error) => {
-      onError?.(error)
+      onErrorRef.current?.(error)
     }
 
     wsRef.current = ws
-  }, [url, onMessage, onOpen, onClose, onError, reconnectInterval])
-
-  useEffect(() => {
-    connectRef.current = connect
-  }, [connect])
+  }, [url, reconnectInterval, maxReconnectInterval])
 
   const send = useCallback((data: unknown) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -73,6 +95,10 @@ export function useWebSocket({
 
   const disconnect = useCallback(() => {
     reconnectRef.current = false
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current)
+      reconnectTimerRef.current = null
+    }
     wsRef.current?.close()
     wsRef.current = null
   }, [])
@@ -81,6 +107,10 @@ export function useWebSocket({
     if (autoConnect) connect()
     return () => {
       reconnectRef.current = false
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current)
+        reconnectTimerRef.current = null
+      }
       wsRef.current?.close()
       wsRef.current = null
     }

@@ -3,6 +3,7 @@ import type { DesignSession, CreateSessionRequest, DesignMessageResponse, Finali
 import type { Project } from '../types/project'
 
 export const architectApi = {
+  listSessions: (status?: string) => apiClient.get<DesignSession[]>('/api/v1/architect/sessions', { params: status ? { status } : undefined }).then(r => r.data),
   createSession: (data: CreateSessionRequest) => apiClient.post<DesignSession>('/api/v1/architect/sessions', data).then(r => r.data),
   getSession: (id: string) => apiClient.get<DesignSession>(`/api/v1/architect/sessions/${id}`).then(r => r.data),
   sendMessage: (sessionId: string, content: string) => apiClient.post<DesignMessageResponse>(`/api/v1/architect/sessions/${sessionId}/message`, { content }).then(r => r.data),

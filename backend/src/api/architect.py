@@ -5,10 +5,6 @@ import unicodedata
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
-from sqlalchemy.ext.asyncio import AsyncSession
-from sse_starlette.sse import EventSourceResponse
-
 from backend.src import models, schemas
 from backend.src.core.llm_client import LLMClient, LLMConfig, LLMError
 from backend.src.prompts.loader import get_prompt
@@ -17,13 +13,18 @@ from backend.src.repositories.phase_repository import PhaseRepository
 from backend.src.repositories.project_repository import ProjectRepository
 from backend.src.repositories.task_repository import TaskRepository
 from backend.src.storage.database import get_db
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from sqlalchemy.ext.asyncio import AsyncSession
+from sse_starlette.sse import EventSourceResponse
 
-router = APIRouter(prefix="/api/architect", tags=["architect"])
+router = APIRouter(prefix="/api/v1/architect", tags=["architect"])
 
 
 def _slugify(value: str) -> str:
     """Convert a string to a URL-friendly slug."""
-    value = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
+    value = (
+        unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
+    )
     value = re.sub(r"[^\w\s-]", "", value.lower())
     return re.sub(r"[-\s]+", "-", value).strip("-")
 
@@ -43,9 +44,34 @@ def _build_message_history(session: models.DesignSession) -> list[dict[str, str]
     """Build LLM message history from a session's messages."""
     sorted_messages = sorted(session.messages, key=lambda m: m.created_at)
     return [
-        {"role": m.role.value if isinstance(m.role, models.MessageRole) else str(m.role), "content": m.content}
+        {
+            "role": (
+                m.role.value if isinstance(m.role, models.MessageRole) else str(m.role)
+            ),
+            "content": m.content,
+        }
         for m in sorted_messages
     ]
+
+
+# ── 0. List Sessions ─────────────────────────────────────────────────
+
+
+@router.get("/sessions", response_model=list[schemas.DesignSessionResponse])
+async def list_sessions(
+    status: str | None = None,
+    db: AsyncSession = Depends(get_db),
+) -> list[schemas.DesignSessionResponse]:
+    """List all design sessions, optionally filtered by status."""
+    repo = DesignSessionRepository(db)
+    status_filter = None
+    if status is not None:
+        try:
+            status_filter = models.DesignSessionStatus(status)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid status: {status}")
+    sessions = await repo.list_sessions(status=status_filter)
+    return [schemas.DesignSessionResponse.model_validate(s) for s in sessions]
 
 
 # ── 1. Create Session ────────────────────────────────────────────────
@@ -67,7 +93,9 @@ async def create_session(
 
     repo = DesignSessionRepository(db)
     session = await repo.add(models.DesignSession(llm_config=llm_config_dict))
-    await repo.add_message(session.id, models.MessageRole.assistant, get_prompt("architect", "system"))
+    await repo.add_message(
+        session.id, models.MessageRole.assistant, get_prompt("architect", "system")
+    )
     await repo.commit()
 
     # Reload with messages
@@ -96,7 +124,9 @@ async def get_session(
 # ── 3. REST Message (non-streaming) ─────────────────────────────────
 
 
-@router.post("/sessions/{session_id}/message", response_model=schemas.DesignMessageResponse)
+@router.post(
+    "/sessions/{session_id}/message", response_model=schemas.DesignMessageResponse
+)
 async def send_message(
     session_id: uuid.UUID,
     body: schemas.MessageRequest,
@@ -127,7 +157,9 @@ async def send_message(
         raise HTTPException(status_code=502, detail=f"LLM error: {e}") from e
 
     # Save assistant response
-    assistant_msg = await repo.add_message(session.id, models.MessageRole.assistant, response_text)
+    assistant_msg = await repo.add_message(
+        session.id, models.MessageRole.assistant, response_text
+    )
     await repo.commit()
     await repo.refresh(assistant_msg)
 
@@ -184,13 +216,22 @@ async def send_message_stream(
 # ── 5. WebSocket Chat ────────────────────────────────────────────────
 
 
-async def architect_websocket(websocket: WebSocket, session_id: uuid.UUID, db: AsyncSession) -> None:
-    """WebSocket handler for architect chat. Registered on the app in main.py."""
+async def architect_websocket(
+    websocket: WebSocket, session_id: uuid.UUID
+) -> None:
+    """WebSocket handler for architect chat. Registered on the app in main.py.
+
+    Uses short-lived DB sessions per operation to avoid holding a connection
+    from the pool for the entire (long-lived) WebSocket lifetime.
+    """
+    from backend.src.storage.database import async_session
+
     await websocket.accept()
 
-    # Load session
-    repo = DesignSessionRepository(db)
-    session = await repo.get_by_id(session_id)
+    # Load session with a short-lived DB session
+    async with async_session() as db:
+        repo = DesignSessionRepository(db)
+        session = await repo.get_by_id(session_id)
     if session is None:
         await websocket.send_json({"type": "error", "content": "Session not found"})
         await websocket.close()
@@ -201,7 +242,9 @@ async def architect_websocket(websocket: WebSocket, session_id: uuid.UUID, db: A
             data = await websocket.receive_json()
 
             if data.get("type") != "message":
-                await websocket.send_json({"type": "error", "content": "Unknown message type"})
+                await websocket.send_json(
+                    {"type": "error", "content": "Unknown message type"}
+                )
                 continue
 
             content = data.get("content", "")
@@ -209,13 +252,18 @@ async def architect_websocket(websocket: WebSocket, session_id: uuid.UUID, db: A
                 await websocket.send_json({"type": "error", "content": "Empty message"})
                 continue
 
-            # Save user message
-            await repo.add_message(session.id, models.MessageRole.user, content)
+            # Save user message and reload session in a short-lived DB session
+            async with async_session() as db:
+                repo = DesignSessionRepository(db)
+                await repo.add_message(session.id, models.MessageRole.user, content)
+                await repo.commit()
 
-            # Reload session with messages to get the latest
-            reloaded = await repo.get_by_id(session_id)
+                # Reload session with messages to get the latest
+                reloaded = await repo.get_by_id(session_id)
             if reloaded is None:
-                await websocket.send_json({"type": "error", "content": "Session not found"})
+                await websocket.send_json(
+                    {"type": "error", "content": "Session not found"}
+                )
                 break
             session = reloaded
 
@@ -234,9 +282,13 @@ async def architect_websocket(websocket: WebSocket, session_id: uuid.UUID, db: A
                 await websocket.send_json({"type": "error", "content": str(e)})
                 continue
 
-            # Save assistant response
-            await repo.add_message(session.id, models.MessageRole.assistant, full_response)
-            await repo.commit()
+            # Save assistant response in a short-lived DB session
+            async with async_session() as db:
+                repo = DesignSessionRepository(db)
+                await repo.add_message(
+                    session.id, models.MessageRole.assistant, full_response
+                )
+                await repo.commit()
 
             await websocket.send_json({"type": "done", "content": full_response})
 
@@ -247,7 +299,7 @@ async def architect_websocket(websocket: WebSocket, session_id: uuid.UUID, db: A
 # ── 6. Finalize Design ──────────────────────────────────────────────
 
 
-@router.post("/finalize/{session_id}", response_model=schemas.ProjectResponse)
+@router.post("/sessions/{session_id}/finalize", response_model=schemas.ProjectResponse)
 async def finalize_design(
     session_id: uuid.UUID,
     body: schemas.FinalizeRequest,
@@ -341,6 +393,7 @@ async def finalize_design(
 
     # Wire up dependencies using depends_on_indices
     task_repo = TaskRepository(db)
+    tasks_with_deps: set[int] = set()
     flat_index = 0
     for phase_data in phases_data:
         for task_data in phase_data.get("tasks", []):
@@ -352,9 +405,14 @@ async def finalize_design(
                         dep_ids.append(all_tasks[idx].id)
                 if dep_ids:
                     await task_repo.add_dependencies(all_tasks[flat_index].id, dep_ids)
-                    # Mark task as waiting since it has dependencies
                     all_tasks[flat_index].status = models.TaskStatus.waiting
+                    tasks_with_deps.add(flat_index)
             flat_index += 1
+
+    # Promote dependency-free tasks to ready
+    for i, task in enumerate(all_tasks):
+        if i not in tasks_with_deps:
+            task.status = models.TaskStatus.ready
 
     # Update session status and link to project
     session.status = models.DesignSessionStatus.finalized
@@ -370,7 +428,9 @@ async def finalize_design(
 # ── 7. Add Task to Existing Project ─────────────────────────────────
 
 
-@router.post("/add-task/{project_id}", response_model=schemas.AddTaskResponse, status_code=201)
+@router.post(
+    "/add-task/{project_id}", response_model=schemas.AddTaskResponse, status_code=201
+)
 async def add_task(
     project_id: uuid.UUID,
     body: schemas.AddTaskRequest,
@@ -391,7 +451,9 @@ async def add_task(
         raise HTTPException(status_code=404, detail="Phase not found")
 
     if phase.project_id != project.id:
-        raise HTTPException(status_code=400, detail="Phase does not belong to this project")
+        raise HTTPException(
+            status_code=400, detail="Phase does not belong to this project"
+        )
 
     # Get project context (existing phases + tasks)
     phases = await phase_repo.list_by_project(project_id)
@@ -403,7 +465,9 @@ async def add_task(
         context += f"- {p.name}: {p.description or 'No description'}\n"
     context += "\nExisting tasks:\n"
     for t in existing_tasks:
-        context += f"- [{t.priority.value}] {t.title}: {t.description or 'No description'}\n"
+        context += (
+            f"- [{t.priority.value}] {t.title}: {t.description or 'No description'}\n"
+        )
 
     prompt = get_prompt("architect", "add_task").format(
         context=context,

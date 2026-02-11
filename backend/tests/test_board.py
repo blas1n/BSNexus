@@ -88,16 +88,16 @@ async def test_get_board_empty_project(client, db_session, mock_redis):
     db_session.add(project)
     await db_session.commit()
 
-    response = await client.get(f"/api/board/{project.id}")
+    response = await client.get(f"/api/v1/board/{project.id}")
 
     assert response.status_code == 200
     data = response.json()
     assert data["project_id"] == str(project.id)
 
-    # All columns should be empty
+    # All columns should be empty (wrapped in BoardColumn format)
     for status in TaskStatus:
         assert status.value in data["columns"]
-        assert data["columns"][status.value] == []
+        assert data["columns"][status.value] == {"tasks": []}
 
     # Stats should all be zero
     assert data["stats"]["total"] == 0
@@ -155,19 +155,19 @@ async def test_get_board_with_tasks(client, db_session, mock_redis):
 
     await db_session.commit()
 
-    response = await client.get(f"/api/board/{project.id}")
+    response = await client.get(f"/api/v1/board/{project.id}")
 
     assert response.status_code == 200
     data = response.json()
 
-    # Check task grouping
-    assert len(data["columns"]["ready"]) == 2
-    assert len(data["columns"]["in_progress"]) == 1
-    assert len(data["columns"]["done"]) == 1
-    assert len(data["columns"]["waiting"]) == 0
-    assert len(data["columns"]["queued"]) == 0
-    assert len(data["columns"]["review"]) == 0
-    assert len(data["columns"]["rejected"]) == 0
+    # Check task grouping (columns wrapped in BoardColumn format)
+    assert len(data["columns"]["ready"]["tasks"]) == 2
+    assert len(data["columns"]["in_progress"]["tasks"]) == 1
+    assert len(data["columns"]["done"]["tasks"]) == 1
+    assert len(data["columns"]["waiting"]["tasks"]) == 0
+    assert len(data["columns"]["queued"]["tasks"]) == 0
+    assert len(data["columns"]["review"]["tasks"]) == 0
+    assert len(data["columns"]["rejected"]["tasks"]) == 0
 
 
 @pytest.mark.asyncio
@@ -231,7 +231,7 @@ async def test_get_board_stats(client, db_session, mock_redis):
 
     await db_session.commit()
 
-    response = await client.get(f"/api/board/{project.id}")
+    response = await client.get(f"/api/v1/board/{project.id}")
 
     assert response.status_code == 200
     data = response.json()
@@ -248,7 +248,7 @@ async def test_get_board_workers(client, db_session, mock_redis):
     """GET /api/board/{project_id} returns workers section with total, idle, busy counts."""
     project, _phase, _task = await create_project_phase_task(db_session)
 
-    response = await client.get(f"/api/board/{project.id}")
+    response = await client.get(f"/api/v1/board/{project.id}")
 
     assert response.status_code == 200
     data = response.json()

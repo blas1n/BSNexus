@@ -17,15 +17,15 @@ uvicorn backend.src.main:app --host 0.0.0.0 --port 8000 --reload
 
 ## API Endpoints
 
-| Prefix | Description |
-|--------|------------|
-| `/api/projects` | Project and phase CRUD |
-| `/api/tasks` | Task CRUD and state transitions |
-| `/api/workers` | Worker registration and heartbeat |
-| `/api/board` | Kanban board state and events |
-| `/api/architect` | Design session chat (HTTP + WebSocket) |
-| `/api/pm` | PM orchestration control |
-| `/health` | Health check endpoints |
+| Prefix              | Description                            |
+| ------------------- | -------------------------------------- |
+| `/api/v1/projects`  | Project and phase CRUD                 |
+| `/api/v1/tasks`     | Task CRUD and state transitions        |
+| `/api/v1/workers`   | Worker registration and heartbeat      |
+| `/api/v1/board`     | Kanban board state and events          |
+| `/api/v1/architect` | Design session chat (HTTP + WebSocket) |
+| `/api/v1/pm`        | PM orchestration control               |
+| `/health`           | Health check endpoints                 |
 
 API docs: http://localhost:8000/docs
 

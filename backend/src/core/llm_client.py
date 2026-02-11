@@ -1,10 +1,33 @@
 from __future__ import annotations
 
 import json
+import logging
+import re
 from typing import Any, AsyncIterator, Optional
 
 import litellm
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
+
+_JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*\n(.*?)\n```", re.DOTALL)
+
+
+def _extract_json(raw: str) -> dict[str, Any]:
+    """Parse JSON from LLM response, handling markdown code blocks."""
+    text = raw.strip()
+    if not text:
+        raise json.JSONDecodeError("Empty response from LLM", text, 0)
+    # Try direct parse first
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    # Try extracting from markdown code block
+    match = _JSON_BLOCK_RE.search(text)
+    if match:
+        return json.loads(match.group(1))
+    raise json.JSONDecodeError("No valid JSON found in LLM response", text, 0)
 
 
 class LLMError(Exception):
@@ -84,9 +107,11 @@ class LLMClient:
         messages: list[dict[str, Any]],
         response_format: dict[str, Any],
         temperature: float = 0.3,
+        timeout: float = 90.0,
     ) -> dict[str, Any]:
         """JSON structured output (for finalize, task decomposition, etc.)."""
         try:
+            logger.info("structured_output: model=%s, messages=%d", self.config.model, len(messages))
             response = await litellm.acompletion(
                 model=self.config.model,
                 messages=messages,
@@ -94,13 +119,16 @@ class LLMClient:
                 api_base=self.config.base_url,
                 temperature=temperature,
                 response_format=response_format,
+                timeout=timeout,
             )
-            return json.loads(response.choices[0].message.content)
+            raw = response.choices[0].message.content or ""
+            return _extract_json(raw)
         except json.JSONDecodeError as e:
             raise LLMError(f"Failed to parse structured output as JSON: {e}", original_error=e) from e
         except LLMError:
             raise
         except Exception as e:
+            logger.exception("structured_output failed: %s", e)
             raise LLMError(f"LLM structured_output failed: {e}", original_error=e) from e
 
 

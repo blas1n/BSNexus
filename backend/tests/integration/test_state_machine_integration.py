@@ -10,7 +10,7 @@ from httpx import AsyncClient
 async def _create_project_and_phase(client: AsyncClient) -> tuple[str, str]:
     """Create a project and phase, return (project_id, phase_id)."""
     project_resp = await client.post(
-        "/api/projects/",
+        "/api/v1/projects/",
         json={
             "name": "State Machine Test Project",
             "description": "Testing state machine",
@@ -21,7 +21,7 @@ async def _create_project_and_phase(client: AsyncClient) -> tuple[str, str]:
     project_id = project_resp.json()["id"]
 
     phase_resp = await client.post(
-        f"/api/projects/{project_id}/phases",
+        f"/api/v1/projects/{project_id}/phases",
         json={
             "name": "SM Phase",
             "description": "State machine phase",
@@ -43,7 +43,7 @@ async def _create_task(
 ) -> dict:
     """Create a task and return its response data."""
     response = await client.post(
-        "/api/tasks/",
+        "/api/v1/tasks/",
         json={
             "project_id": project_id,
             "phase_id": phase_id,
@@ -73,7 +73,7 @@ async def test_invalid_transition_rejected(client: AsyncClient):
 
     # Try invalid transition: waiting -> in_progress (should be waiting -> ready)
     response = await client.post(
-        f"/api/tasks/{waiting_task['id']}/transition",
+        f"/api/v1/tasks/{waiting_task['id']}/transition",
         json={"new_status": "in_progress", "actor": "test"},
     )
     assert response.status_code == 400
@@ -84,7 +84,7 @@ async def test_invalid_transition_rejected(client: AsyncClient):
     assert ready_task["status"] == "ready"
 
     response = await client.post(
-        f"/api/tasks/{ready_task['id']}/transition",
+        f"/api/v1/tasks/{ready_task['id']}/transition",
         json={"new_status": "done", "actor": "test"},
     )
     assert response.status_code == 400
@@ -92,7 +92,7 @@ async def test_invalid_transition_rejected(client: AsyncClient):
 
     # Try ready -> in_progress (invalid, must go to queued first)
     response = await client.post(
-        f"/api/tasks/{ready_task['id']}/transition",
+        f"/api/v1/tasks/{ready_task['id']}/transition",
         json={"new_status": "in_progress", "actor": "test"},
     )
     assert response.status_code == 400
@@ -107,7 +107,7 @@ async def test_optimistic_locking_conflict(client: AsyncClient):
 
     # Try transition with wrong version
     response = await client.post(
-        f"/api/tasks/{task['id']}/transition",
+        f"/api/v1/tasks/{task['id']}/transition",
         json={"new_status": "queued", "actor": "test", "expected_version": 999},
     )
     assert response.status_code == 409
@@ -118,7 +118,7 @@ async def test_optimistic_locking_conflict(client: AsyncClient):
 
     # Verify correct version works
     response = await client.post(
-        f"/api/tasks/{task['id']}/transition",
+        f"/api/v1/tasks/{task['id']}/transition",
         json={"new_status": "queued", "actor": "test", "expected_version": task["version"]},
     )
     assert response.status_code == 200
@@ -133,7 +133,7 @@ async def test_optimistic_locking_conflict(client: AsyncClient):
     assert updatable_task["status"] == "waiting"
 
     response = await client.patch(
-        f"/api/tasks/{updatable_task['id']}",
+        f"/api/v1/tasks/{updatable_task['id']}",
         json={"title": "New Title", "expected_version": 999},
     )
     assert response.status_code == 409
@@ -148,28 +148,28 @@ async def test_rejected_to_ready_retry(client: AsyncClient):
 
     # Move through: ready -> queued -> in_progress -> rejected
     await client.post(
-        f"/api/tasks/{task['id']}/transition",
+        f"/api/v1/tasks/{task['id']}/transition",
         json={"new_status": "queued", "actor": "test"},
     )
     await client.post(
-        f"/api/tasks/{task['id']}/transition",
+        f"/api/v1/tasks/{task['id']}/transition",
         json={"new_status": "in_progress", "actor": "test"},
     )
     reject_resp = await client.post(
-        f"/api/tasks/{task['id']}/transition",
+        f"/api/v1/tasks/{task['id']}/transition",
         json={"new_status": "rejected", "actor": "test", "reason": "needs rework"},
     )
     assert reject_resp.status_code == 200
     assert reject_resp.json()["status"] == "rejected"
 
     # Verify task is in rejected state
-    task_resp = await client.get(f"/api/tasks/{task['id']}")
+    task_resp = await client.get(f"/api/v1/tasks/{task['id']}")
     assert task_resp.status_code == 200
     assert task_resp.json()["status"] == "rejected"
 
     # Retry: rejected -> ready
     retry_resp = await client.post(
-        f"/api/tasks/{task['id']}/transition",
+        f"/api/v1/tasks/{task['id']}/transition",
         json={"new_status": "ready", "actor": "test", "reason": "retrying"},
     )
     assert retry_resp.status_code == 200
@@ -177,7 +177,7 @@ async def test_rejected_to_ready_retry(client: AsyncClient):
     assert retry_resp.json()["previous_status"] == "rejected"
 
     # Verify task is back to ready state and execution fields are reset
-    task_resp = await client.get(f"/api/tasks/{task['id']}")
+    task_resp = await client.get(f"/api/v1/tasks/{task['id']}")
     assert task_resp.status_code == 200
     final_task = task_resp.json()
     assert final_task["status"] == "ready"

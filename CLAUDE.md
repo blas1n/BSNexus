@@ -80,16 +80,16 @@ docker compose -f .devcontainer/docker-compose.yml up -d postgres redis
 - Never use synchronous blocking I/O
 - Never use gRPC, Redpanda, or Kong Gateway (legacy stack)
 
-## API Endpoints (no /v1/ prefix)
+## API Endpoints
 
-| Prefix | Description |
-|--------|------------|
-| `/api/projects` | Project and phase CRUD |
-| `/api/tasks` | Task CRUD and state transitions |
-| `/api/workers` | Worker registration and heartbeat |
-| `/api/board` | Kanban board state and events |
-| `/api/architect` | Design session chat (HTTP + WebSocket) |
-| `/api/pm` | PM orchestration control |
+| Prefix              | Description                            |
+| ------------------- | -------------------------------------- |
+| `/api/v1/projects`  | Project and phase CRUD                 |
+| `/api/v1/tasks`     | Task CRUD and state transitions        |
+| `/api/v1/workers`   | Worker registration and heartbeat      |
+| `/api/v1/board`     | Kanban board state and events          |
+| `/api/v1/architect` | Design session chat (HTTP + WebSocket) |
+| `/api/v1/pm`        | PM orchestration control               |
 
 ## Task State Machine
 

@@ -101,6 +101,16 @@ export default function ArchitectPage() {
     setConnected(wsConnected)
   }, [wsConnected, setConnected])
 
+  // Load sessions list on mount
+  useEffect(() => {
+    architectApi.listSessions().then((list) => {
+      setSessions(list)
+    }).catch(() => {
+      // Failed to load sessions
+    })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   // Load session from URL param
   useEffect(() => {
     if (paramSessionId && paramSessionId !== sessionId) {
@@ -151,23 +161,14 @@ export default function ArchitectPage() {
   }
 
   const handleFinalize = async (repoPath: string) => {
-    if (!sessionId) return
+    if (!sessionId) throw new Error('No active session')
+    const apiKey = sessionStorage.getItem('llm_api_key') || ''
+    const project = await architectApi.finalize(sessionId, {
+      repo_path: repoPath,
+      pm_llm_config: apiKey ? { api_key: apiKey } : undefined,
+    })
     setShowFinalizeDialog(false)
-    try {
-      const apiKey = sessionStorage.getItem('llm_api_key') || ''
-      const project = await architectApi.finalize(sessionId, {
-        repo_path: repoPath,
-        pm_llm_config: apiKey ? { api_key: apiKey } : undefined,
-      })
-      setFinalizedProject(project)
-    } catch {
-      addMessage({
-        id: crypto.randomUUID(),
-        role: 'assistant',
-        content: 'Error: Failed to finalize design.',
-        createdAt: new Date().toISOString(),
-      })
-    }
+    setFinalizedProject(project)
   }
 
   const handleNewSession = () => {

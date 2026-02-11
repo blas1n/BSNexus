@@ -5,22 +5,22 @@ import unicodedata
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from backend.src import models, schemas
 from backend.src.repositories.phase_repository import PhaseRepository
 from backend.src.repositories.project_repository import ProjectRepository
 from backend.src.storage.database import get_db
-
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
 
 # -- Helpers -------------------------------------------------------------------
 
 
 def slugify(value: str) -> str:
     """Convert a string to a URL-friendly slug."""
-    value = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
+    value = (
+        unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
+    )
     value = re.sub(r"[^\w\s-]", "", value.lower())
     return re.sub(r"[-\s]+", "-", value).strip("-")
 
@@ -35,13 +35,13 @@ class PhaseUpdate(BaseModel):
 
 # -- Router --------------------------------------------------------------------
 
-router = APIRouter(prefix="/api/projects", tags=["projects"])
+router = APIRouter(prefix="/api/v1/projects", tags=["projects"], redirect_slashes=False)
 
 
 # -- Project Endpoints ---------------------------------------------------------
 
 
-@router.post("/", response_model=schemas.ProjectResponse, status_code=201)
+@router.post("", response_model=schemas.ProjectResponse, status_code=201)
 async def create_project(
     project_data: schemas.ProjectCreate,
     db: AsyncSession = Depends(get_db),
@@ -62,7 +62,7 @@ async def create_project(
     return schemas.ProjectResponse.model_validate(project)
 
 
-@router.get("/", response_model=list[schemas.ProjectResponse])
+@router.get("", response_model=list[schemas.ProjectResponse])
 async def list_projects(
     limit: int = Query(50, le=200),
     offset: int = Query(0, ge=0),
@@ -121,7 +121,9 @@ async def update_project(
 # -- Phase Endpoints -----------------------------------------------------------
 
 
-@router.post("/{project_id}/phases", response_model=schemas.PhaseResponse, status_code=201)
+@router.post(
+    "/{project_id}/phases", response_model=schemas.PhaseResponse, status_code=201
+)
 async def create_phase(
     project_id: UUID,
     phase_data: schemas.PhaseCreate,
