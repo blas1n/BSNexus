@@ -3,12 +3,10 @@ import { Button } from '../common'
 
 interface Props {
   onSend: (message: string) => void
-  onFinalize?: () => void
   disabled?: boolean
-  showFinalize?: boolean
 }
 
-export default function ChatInput({ onSend, onFinalize, disabled, showFinalize }: Props) {
+export default function ChatInput({ onSend, disabled }: Props) {
   const [input, setInput] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
@@ -42,23 +40,15 @@ export default function ChatInput({ onSend, onFinalize, disabled, showFinalize }
         placeholder="Type a message... (Enter to send, Shift+Enter for newline)"
         disabled={disabled}
         rows={1}
-        className="flex-1 resize-none rounded-lg border border-border px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50"
+        className="flex-1 resize-none rounded-lg bg-bg-input border border-border px-4 py-2 text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent disabled:opacity-50"
       />
       <Button
+        variant="primary"
         onClick={handleSubmit}
         disabled={disabled || !input.trim()}
       >
         Send
       </Button>
-      {showFinalize && (
-        <Button
-          onClick={onFinalize}
-          disabled={disabled}
-          className="bg-green-600 hover:bg-green-700"
-        >
-          Finalize
-        </Button>
-      )}
     </div>
   )
 }

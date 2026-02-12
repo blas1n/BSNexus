@@ -7,6 +7,14 @@ interface Props {
   message: ChatMessageType
 }
 
+function formatTime(dateStr: string): string {
+  try {
+    return new Date(dateStr).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  } catch {
+    return ''
+  }
+}
+
 export default function ChatMessage({ message }: Props) {
   const isAssistant = message.role === 'assistant'
 
@@ -47,6 +55,11 @@ export default function ChatMessage({ message }: Props) {
           </div>
         ) : (
           <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+        )}
+        {message.createdAt && (
+          <div className={`text-xs mt-1 ${isAssistant ? 'text-text-tertiary' : 'text-white/70'}`}>
+            {formatTime(message.createdAt)}
+          </div>
         )}
       </div>
     </div>

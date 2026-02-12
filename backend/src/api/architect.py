@@ -92,7 +92,7 @@ async def create_session(
         llm_config_dict["base_url"] = body.llm_config.base_url
 
     repo = DesignSessionRepository(db)
-    session = await repo.add(models.DesignSession(llm_config=llm_config_dict))
+    session = await repo.add(models.DesignSession(name=body.name, llm_config=llm_config_dict))
     await repo.add_message(
         session.id, models.MessageRole.assistant, get_prompt("architect", "system")
     )

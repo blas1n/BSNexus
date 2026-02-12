@@ -220,6 +220,7 @@ class DesignSession(Base):
     project_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("projects.id", ondelete="SET NULL"), nullable=True
     )
+    name: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
     status: Mapped[DesignSessionStatus] = mapped_column(
         Enum(DesignSessionStatus), nullable=False, default=DesignSessionStatus.active
     )

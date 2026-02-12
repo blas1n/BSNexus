@@ -12,6 +12,7 @@ export interface DesignMessage {
 export interface DesignSession {
   id: string
   project_id: string | null
+  name: string | null
   status: DesignSessionStatus
   created_at: string
   updated_at: string
@@ -26,6 +27,7 @@ export interface LLMConfigInput {
 
 export interface CreateSessionRequest {
   llm_config: LLMConfigInput
+  name?: string
 }
 
 export interface MessageRequest {

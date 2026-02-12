@@ -249,6 +249,7 @@ class LLMConfigInput(BaseModel):
 
 class CreateSessionRequest(BaseModel):
     llm_config: LLMConfigInput
+    name: Optional[str] = None
 
 
 class MessageRequest(BaseModel):
@@ -268,6 +269,7 @@ class DesignSessionResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: uuid.UUID
     project_id: Optional[uuid.UUID] = None
+    name: Optional[str] = None
     status: DesignSessionStatus
     created_at: datetime
     updated_at: datetime

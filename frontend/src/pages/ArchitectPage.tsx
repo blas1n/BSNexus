@@ -4,12 +4,12 @@ import { useArchitectStore } from '../stores/architectStore'
 import type { ChatMessage as ChatMessageType } from '../stores/architectStore'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { architectApi } from '../api/architect'
-import type { LLMConfigInput, DesignSession } from '../types/architect'
+import type { DesignSession } from '../types/architect'
 import type { Project } from '../types/project'
 import ChatMessage from '../components/architect/ChatMessage'
 import ChatInput from '../components/architect/ChatInput'
 import SessionList from '../components/architect/SessionList'
-import LLMConfigForm from '../components/architect/LLMConfigForm'
+import NewSessionModal from '../components/architect/NewSessionModal'
 import FinalizeDialog from '../components/architect/FinalizeDialog'
 import DesignPreview from '../components/architect/DesignPreview'
 import Header from '../components/layout/Header'
@@ -35,9 +35,12 @@ export default function ArchitectPage() {
     clearMessages,
   } = useArchitectStore()
 
-  const [showConfig, setShowConfig] = useState(!sessionId)
+  const [newSessionModalOpen, setNewSessionModalOpen] = useState(false)
   const [showFinalizeDialog, setShowFinalizeDialog] = useState(false)
   const [finalizedProject, setFinalizedProject] = useState<Project | null>(null)
+
+  // Find the active session object for name display
+  const activeSession = sessions.find((s) => s.id === sessionId) || null
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -124,7 +127,6 @@ export default function ArchitectPage() {
     try {
       const session: DesignSession = await architectApi.getSession(id)
       setSessionId(id)
-      setShowConfig(false)
       const chatMessages: ChatMessageType[] = session.messages.map((m) => ({
         id: m.id,
         role: m.role,
@@ -137,14 +139,23 @@ export default function ArchitectPage() {
     }
   }
 
-  const handleCreateSession = async (config: LLMConfigInput) => {
+  const handleCreateSession = async (config: { model: string; api_key: string; base_url?: string; name?: string }) => {
     try {
-      const session = await architectApi.createSession({ llm_config: config })
+      const session = await architectApi.createSession({
+        llm_config: {
+          api_key: config.api_key,
+          model: config.model,
+          base_url: config.base_url,
+        },
+        name: config.name,
+      })
       setSessionId(session.id)
-      setShowConfig(false)
+      setNewSessionModalOpen(false)
       clearMessages()
       setSessions([session, ...sessions])
       navigate(`/architect/${session.id}`)
+      // Load full session messages (includes system message)
+      loadSession(session.id)
     } catch {
       // Error creating session
     }
@@ -173,11 +184,7 @@ export default function ArchitectPage() {
   }
 
   const handleNewSession = () => {
-    setSessionId(null)
-    clearMessages()
-    setShowConfig(true)
-    setFinalizedProject(null)
-    navigate('/architect')
+    setNewSessionModalOpen(true)
   }
 
   const handleSelectSession = (id: string) => {
@@ -185,8 +192,10 @@ export default function ArchitectPage() {
     loadSession(id)
   }
 
-  // Show config form if no session
-  if (showConfig && !sessionId) {
+  const headerTitle = activeSession?.name || (sessionId ? 'Architect' : 'Architect')
+
+  // When no session is selected, show session list + empty state
+  if (!sessionId) {
     return (
       <>
         <Header title="Architect" />
@@ -198,9 +207,17 @@ export default function ArchitectPage() {
             onNew={handleNewSession}
           />
           <div className="flex-1 flex items-center justify-center">
-            <LLMConfigForm onSubmit={handleCreateSession} />
+            <div className="text-center space-y-4">
+              <div className="text-text-tertiary text-lg">No session selected</div>
+              <p className="text-text-muted text-sm">Select a session from the sidebar or create a new one.</p>
+            </div>
           </div>
         </div>
+        <NewSessionModal
+          open={newSessionModalOpen}
+          onClose={() => setNewSessionModalOpen(false)}
+          onCreateSession={handleCreateSession}
+        />
       </>
     )
   }
@@ -208,11 +225,21 @@ export default function ArchitectPage() {
   return (
     <>
       <Header
-        title="Architect"
+        title={headerTitle}
         action={
-          <div className="flex items-center gap-2">
-            <span className={`inline-block w-2 h-2 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`} />
-            <span className="text-xs text-text-secondary">{isConnected ? 'Connected' : 'Disconnected'}</span>
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2">
+              <span className={`inline-block w-2 h-2 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`} />
+              <span className="text-xs text-text-secondary">{isConnected ? 'Connected' : 'Disconnected'}</span>
+            </div>
+            {messages.length > 0 && !isStreaming && (
+              <button
+                onClick={() => setShowFinalizeDialog(true)}
+                className="px-3 py-1.5 text-sm font-medium rounded-md bg-green-600 text-white hover:bg-green-700 transition-colors"
+              >
+                Finalize
+              </button>
+            )}
           </div>
         }
       />
@@ -236,9 +263,7 @@ export default function ArchitectPage() {
           <div className="p-4 border-t border-border">
             <ChatInput
               onSend={handleSend}
-              onFinalize={() => setShowFinalizeDialog(true)}
               disabled={isStreaming || !isConnected}
-              showFinalize={messages.length > 0 && !isStreaming}
             />
           </div>
         </div>
@@ -261,6 +286,12 @@ export default function ArchitectPage() {
           />
         )}
       </div>
+
+      <NewSessionModal
+        open={newSessionModalOpen}
+        onClose={() => setNewSessionModalOpen(false)}
+        onCreateSession={handleCreateSession}
+      />
     </>
   )
 }
