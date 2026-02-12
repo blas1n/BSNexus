@@ -1,5 +1,7 @@
+import { useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import { LayoutDashboard, Bot, Kanban, Users, Settings } from 'lucide-react'
+import { SettingsModal } from './SettingsModal'
 
 const navItems = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard },
@@ -10,6 +12,7 @@ const navItems = [
 
 export default function Sidebar() {
   const location = useLocation()
+  const [settingsOpen, setSettingsOpen] = useState(false)
 
   const isActive = (to: string) => {
     if (to === '/') return location.pathname === '/'
@@ -56,15 +59,15 @@ export default function Sidebar() {
       <div className="mt-auto px-3 pb-4">
         <button
           type="button"
-          onClick={() => {
-            // Settings modal will be implemented in Task 04
-          }}
+          onClick={() => setSettingsOpen(true)}
           className="flex items-center gap-3 px-3 py-2 text-sm text-text-secondary hover:bg-bg-hover rounded-md cursor-pointer transition-colors w-full"
         >
           <Settings size={18} />
           Settings
         </button>
       </div>
+
+      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </aside>
   )
 }
