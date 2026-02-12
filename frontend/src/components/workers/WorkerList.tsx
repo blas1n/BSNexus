@@ -38,9 +38,11 @@ export default function WorkerList({ workers }: Props) {
             onClick={() => setFilter(f.value)}
             variant={filter === f.value ? 'primary' : 'secondary'}
             size="sm"
-            className={filter === f.value ? 'bg-accent/10 text-accent-text hover:bg-accent/20' : ''}
           >
-            {f.label} ({counts[f.value]})
+            {f.label}{' '}
+            <span className={filter === f.value ? 'opacity-70' : 'text-text-tertiary'}>
+              ({counts[f.value]})
+            </span>
           </Button>
         ))}
       </div>

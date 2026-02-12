@@ -1,10 +1,14 @@
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { workersApi } from '../api/workers'
 import WorkerList from '../components/workers/WorkerList'
+import RegistrationTokenModal from '../components/workers/RegistrationTokenModal'
 import { StatCard, Button } from '../components/common'
 import Header from '../components/layout/Header'
 
 export default function WorkersPage() {
+  const [tokenModalOpen, setTokenModalOpen] = useState(false)
+
   const { data: workers, isLoading, error } = useQuery({
     queryKey: ['workers'],
     queryFn: workersApi.list,
@@ -40,18 +44,29 @@ export default function WorkersPage() {
 
   return (
     <>
-      <Header title="Workers" action={<Button size="sm">Registration Token</Button>} />
+      <Header
+        title="Workers"
+        action={
+          <Button size="sm" onClick={() => setTokenModalOpen(true)}>
+            Registration Token
+          </Button>
+        }
+      />
       <div className="p-8">
         {/* Summary stats */}
         <div className="grid grid-cols-4 gap-4 mb-6">
-          <StatCard label="Total" value={workerList.length} />
-          <StatCard label="Idle" value={idle} badge={{ color: 'idle', label: 'Idle' }} />
-          <StatCard label="Busy" value={busy} badge={{ color: 'busy', label: 'Busy' }} />
+          <StatCard label="Total Workers" value={workerList.length} />
+          <StatCard label="Online" value={idle} badge={{ color: 'idle', label: 'Idle' }} />
+          <StatCard label="Running Tasks" value={busy} badge={{ color: 'busy', label: 'Busy' }} />
           <StatCard label="Offline" value={offline} badge={{ color: 'offline', label: 'Offline' }} />
         </div>
 
         <WorkerList workers={workerList} />
       </div>
+
+      {tokenModalOpen && (
+        <RegistrationTokenModal open={tokenModalOpen} onClose={() => setTokenModalOpen(false)} />
+      )}
     </>
   )
 }
