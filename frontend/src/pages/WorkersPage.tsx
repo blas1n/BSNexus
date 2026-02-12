@@ -1,7 +1,8 @@
 import { useQuery } from '@tanstack/react-query'
 import { workersApi } from '../api/workers'
 import WorkerList from '../components/workers/WorkerList'
-import { StatCard } from '../components/common'
+import { StatCard, Button } from '../components/common'
+import Header from '../components/layout/Header'
 
 export default function WorkersPage() {
   const { data: workers, isLoading, error } = useQuery({
@@ -16,30 +17,41 @@ export default function WorkersPage() {
   const offline = workerList.filter((w) => w.status === 'offline').length
 
   if (isLoading) {
-    return <div className="text-text-secondary">Loading workers...</div>
+    return (
+      <>
+        <Header title="Workers" />
+        <div className="p-8 text-text-secondary">Loading workers...</div>
+      </>
+    )
   }
 
   if (error) {
     return (
-      <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
-        Failed to load workers. Please try again.
-      </div>
+      <>
+        <Header title="Workers" />
+        <div className="p-8">
+          <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+            Failed to load workers. Please try again.
+          </div>
+        </div>
+      </>
     )
   }
 
   return (
-    <div>
-      <h2 className="text-2xl font-bold text-text-primary mb-4">Workers</h2>
+    <>
+      <Header title="Workers" action={<Button size="sm">Registration Token</Button>} />
+      <div className="p-8">
+        {/* Summary stats */}
+        <div className="grid grid-cols-4 gap-4 mb-6">
+          <StatCard label="Total" value={workerList.length} />
+          <StatCard label="Idle" value={idle} badge={{ color: 'idle', label: 'Idle' }} />
+          <StatCard label="Busy" value={busy} badge={{ color: 'busy', label: 'Busy' }} />
+          <StatCard label="Offline" value={offline} badge={{ color: 'offline', label: 'Offline' }} />
+        </div>
 
-      {/* Summary stats */}
-      <div className="grid grid-cols-4 gap-4 mb-6">
-        <StatCard label="Total" value={workerList.length} />
-        <StatCard label="Idle" value={idle} badge={{ color: 'idle', label: 'Idle' }} />
-        <StatCard label="Busy" value={busy} badge={{ color: 'busy', label: 'Busy' }} />
-        <StatCard label="Offline" value={offline} badge={{ color: 'offline', label: 'Offline' }} />
+        <WorkerList workers={workerList} />
       </div>
-
-      <WorkerList workers={workerList} />
-    </div>
+    </>
   )
 }
