@@ -249,3 +249,15 @@ class DesignMessage(Base):
 
     # Relationships
     session: Mapped["DesignSession"] = relationship("DesignSession", back_populates="messages")
+
+
+class Setting(Base):
+    __tablename__ = "settings"
+
+    key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )

@@ -295,3 +295,35 @@ class AddTaskResponse(BaseModel):
     priority: TaskPriority
     worker_prompt: Optional[dict] = None
     qa_prompt: Optional[dict] = None
+
+
+# ── Dashboard Schemas ────────────────────────────────────────────────
+
+
+class DashboardStatsResponse(BaseModel):
+    total_projects: int
+    active_projects: int
+    completed_projects: int
+    total_tasks: int
+    active_tasks: int
+    in_progress_tasks: int
+    done_tasks: int
+    completion_rate: float
+    total_workers: int
+    online_workers: int
+    busy_workers: int
+
+
+# ── Settings Schemas ─────────────────────────────────────────────────
+
+
+class GlobalSettingsResponse(BaseModel):
+    llm_api_key: Optional[str] = None
+    llm_model: Optional[str] = None
+    llm_base_url: Optional[str] = None
+
+
+class GlobalSettingsUpdate(BaseModel):
+    llm_api_key: Optional[str] = None
+    llm_model: Optional[str] = None
+    llm_base_url: Optional[str] = None
