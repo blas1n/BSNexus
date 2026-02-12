@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Modal, Button } from '../common'
 
 interface Props {
   onConfirm: (repoPath: string) => Promise<void>
@@ -26,46 +27,43 @@ export default function FinalizeDialog({ onConfirm, onCancel }: Props) {
     }
   }
 
+  const footer = (
+    <>
+      <Button variant="secondary" onClick={onCancel} disabled={isLoading}>
+        Cancel
+      </Button>
+      <Button
+        onClick={handleSubmit}
+        disabled={!repoPath.trim() || isLoading}
+        loading={isLoading}
+        className="bg-green-600 hover:bg-green-700"
+      >
+        {isLoading ? 'Finalizing...' : 'Finalize'}
+      </Button>
+    </>
+  )
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-      <div className="w-full max-w-md rounded-lg bg-bg-card p-6 shadow-xl">
-        <h3 className="text-lg font-semibold text-text-primary mb-4">Finalize Design</h3>
-        <p className="text-sm text-text-secondary mb-4">
-          This will create a project from the current design. Please provide the repository path.
-        </p>
-        {error && (
-          <div className="mb-4 rounded-md bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-700">
-            {error}
-          </div>
-        )}
-        <div className="mb-4">
-          <label className="block text-sm font-medium text-text-primary mb-1">Repository Path</label>
-          <input
-            type="text"
-            value={repoPath}
-            onChange={(e) => setRepoPath(e.target.value)}
-            placeholder="/path/to/repo"
-            disabled={isLoading}
-            className="w-full rounded-md border border-border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent disabled:bg-bg-elevated"
-          />
+    <Modal open={true} onClose={onCancel} title="Finalize Design" footer={footer} width={448}>
+      <p className="text-sm text-text-secondary mb-4">
+        This will create a project from the current design. Please provide the repository path.
+      </p>
+      {error && (
+        <div className="mb-4 rounded-md bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-700">
+          {error}
         </div>
-        <div className="flex gap-2 justify-end">
-          <button
-            onClick={onCancel}
-            disabled={isLoading}
-            className="rounded-md border border-border px-4 py-2 text-sm font-medium text-text-primary hover:bg-bg-hover disabled:opacity-50"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={handleSubmit}
-            disabled={!repoPath.trim() || isLoading}
-            className="rounded-md bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50"
-          >
-            {isLoading ? 'Finalizing...' : 'Finalize'}
-          </button>
-        </div>
+      )}
+      <div>
+        <label className="block text-sm font-medium text-text-primary mb-1">Repository Path</label>
+        <input
+          type="text"
+          value={repoPath}
+          onChange={(e) => setRepoPath(e.target.value)}
+          placeholder="/path/to/repo"
+          disabled={isLoading}
+          className="w-full rounded-md border border-border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent disabled:bg-bg-elevated"
+        />
       </div>
-    </div>
+    </Modal>
   )
 }

@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
+import { Button } from '../common'
 
 interface Props {
   onSend: (message: string) => void
@@ -43,21 +44,20 @@ export default function ChatInput({ onSend, onFinalize, disabled, showFinalize }
         rows={1}
         className="flex-1 resize-none rounded-lg border border-border px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50"
       />
-      <button
+      <Button
         onClick={handleSubmit}
         disabled={disabled || !input.trim()}
-        className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-light disabled:opacity-50"
       >
         Send
-      </button>
+      </Button>
       {showFinalize && (
-        <button
+        <Button
           onClick={onFinalize}
           disabled={disabled}
-          className="rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50"
+          className="bg-green-600 hover:bg-green-700"
         >
           Finalize
-        </button>
+        </Button>
       )}
     </div>
   )

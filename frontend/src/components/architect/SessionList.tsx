@@ -1,4 +1,5 @@
 import type { DesignSession } from '../../types/architect'
+import { Button } from '../common'
 
 interface Props {
   sessions: DesignSession[]
@@ -10,12 +11,12 @@ interface Props {
 export default function SessionList({ sessions, activeSessionId, onSelect, onNew }: Props) {
   return (
     <div className="w-64 border-r border-border bg-bg-surface p-4 flex flex-col h-full">
-      <button
+      <Button
         onClick={onNew}
-        className="w-full mb-4 rounded-md bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent-light"
+        className="w-full mb-4"
       >
         + New Session
-      </button>
+      </Button>
       <div className="flex-1 overflow-y-auto space-y-1">
         {sessions.map((session) => (
           <button

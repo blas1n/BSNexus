@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { pmApi } from '../../api/pm'
+import { Button } from '../common'
 
 interface Props {
   projectId: string
@@ -65,29 +66,32 @@ export default function PMControl({ projectId }: Props) {
 
       <div className="flex gap-2 mb-3">
         {isRunning ? (
-          <button
+          <Button
             onClick={() => pauseMutation.mutate()}
             disabled={pauseMutation.isPending}
-            className="flex-1 rounded-md bg-yellow-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-yellow-600 disabled:opacity-50"
+            size="sm"
+            className="flex-1 bg-yellow-500 hover:bg-yellow-600"
           >
             Pause
-          </button>
+          </Button>
         ) : (
-          <button
+          <Button
             onClick={() => startMutation.mutate()}
             disabled={startMutation.isPending}
-            className="flex-1 rounded-md bg-green-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50"
+            size="sm"
+            className="flex-1 bg-green-600 hover:bg-green-700"
           >
             Start
-          </button>
+          </Button>
         )}
-        <button
+        <Button
           onClick={() => queueMutation.mutate()}
           disabled={queueMutation.isPending}
-          className="flex-1 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white hover:bg-accent-light disabled:opacity-50"
+          size="sm"
+          className="flex-1"
         >
           Queue Next
-        </button>
+        </Button>
       </div>
 
       {logs.length > 0 && (

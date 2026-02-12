@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { Worker, WorkerStatus } from '../../types/worker'
 import WorkerCard from './WorkerCard'
+import { Button } from '../common'
 
 type FilterStatus = WorkerStatus | 'all'
 
@@ -32,17 +33,15 @@ export default function WorkerList({ workers }: Props) {
       {/* Filter tabs */}
       <div className="flex gap-2 mb-4">
         {filters.map((f) => (
-          <button
+          <Button
             key={f.value}
             onClick={() => setFilter(f.value)}
-            className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
-              filter === f.value
-                ? 'bg-accent/10 text-accent-text'
-                : 'bg-bg-elevated text-text-secondary hover:bg-bg-hover'
-            }`}
+            variant={filter === f.value ? 'primary' : 'secondary'}
+            size="sm"
+            className={filter === f.value ? 'bg-accent/10 text-accent-text hover:bg-accent/20' : ''}
           >
             {f.label} ({counts[f.value]})
-          </button>
+          </Button>
         ))}
       </div>
 

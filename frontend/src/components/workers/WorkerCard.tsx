@@ -1,10 +1,5 @@
 import type { Worker } from '../../types/worker'
-
-const statusColors: Record<string, { bg: string; text: string; dot: string }> = {
-  idle: { bg: 'bg-green-50', text: 'text-green-700', dot: 'bg-green-500' },
-  busy: { bg: 'bg-orange-50', text: 'text-orange-700', dot: 'bg-orange-500' },
-  offline: { bg: 'bg-gray-50', text: 'text-gray-500', dot: 'bg-gray-400' },
-}
+import { Badge } from '../common'
 
 const platformIcons: Record<string, string> = {
   linux: 'L',
@@ -17,9 +12,6 @@ interface Props {
 }
 
 export default function WorkerCard({ worker }: Props) {
-  const colors = statusColors[worker.status] || statusColors.offline
-  const capabilities = worker.capabilities ? Object.keys(worker.capabilities) : []
-
   return (
     <div className={`rounded-lg border border-border bg-bg-card p-4 ${worker.status === 'offline' ? 'opacity-60' : ''}`}>
       <div className="flex items-center justify-between mb-3">
@@ -32,15 +24,12 @@ export default function WorkerCard({ worker }: Props) {
             <p className="text-xs text-text-tertiary">{worker.platform} / {worker.executor_type}</p>
           </div>
         </div>
-        <div className="flex items-center gap-1.5">
-          <span className={`inline-block w-2 h-2 rounded-full ${colors.dot}`} />
-          <span className={`text-xs font-medium ${colors.text}`}>{worker.status}</span>
-        </div>
+        <Badge color={worker.status} label={worker.status} />
       </div>
 
-      {capabilities.length > 0 && (
+      {worker.capabilities && Object.keys(worker.capabilities).length > 0 && (
         <div className="flex flex-wrap gap-1 mb-3">
-          {capabilities.map((cap) => (
+          {Object.keys(worker.capabilities).map((cap) => (
             <span key={cap} className="rounded bg-accent/10 px-1.5 py-0.5 text-xs text-accent-text">
               {cap}
             </span>

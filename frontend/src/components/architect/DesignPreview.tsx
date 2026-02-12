@@ -1,4 +1,12 @@
 import type { Project } from '../../types/project'
+import { Badge, Button } from '../common'
+
+const statusBadgeColors: Record<string, string> = {
+  design: '#8B5CF6',
+  active: '#22C55E',
+  paused: '#F59E0B',
+  completed: '#3B82F6',
+}
 
 interface Props {
   project: Project
@@ -6,13 +14,13 @@ interface Props {
 }
 
 export default function DesignPreview({ project, onConfirm }: Props) {
+  const badgeColor = statusBadgeColors[project.status] || statusBadgeColors.design
+
   return (
     <div className="rounded-lg border border-border bg-bg-card p-4 space-y-4">
       <div className="flex items-center justify-between">
         <h3 className="text-lg font-semibold text-text-primary">{project.name}</h3>
-        <span className="rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-700">
-          {project.status}
-        </span>
+        <Badge color={badgeColor} label={project.status} />
       </div>
       <p className="text-sm text-text-secondary">{project.description}</p>
 
@@ -20,7 +28,7 @@ export default function DesignPreview({ project, onConfirm }: Props) {
         <div key={phase.id} className="border-t border-border-subtle pt-3">
           <div className="flex items-center gap-2 mb-2">
             <span className="text-sm font-semibold text-text-primary">Phase {phase.order}: {phase.name}</span>
-            <span className="rounded-full bg-bg-elevated px-2 py-0.5 text-xs text-text-secondary">{phase.status}</span>
+            <Badge color="#6B7280" label={phase.status} />
           </div>
           {phase.description && (
             <p className="text-xs text-text-secondary mb-2">{phase.description}</p>
@@ -29,12 +37,12 @@ export default function DesignPreview({ project, onConfirm }: Props) {
       ))}
 
       {onConfirm && (
-        <button
+        <Button
           onClick={onConfirm}
-          className="w-full rounded-md bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700"
+          className="w-full bg-green-600 hover:bg-green-700"
         >
           Confirm Project Creation
-        </button>
+        </Button>
       )}
     </div>
   )

@@ -1,12 +1,14 @@
 import { useQuery } from '@tanstack/react-query'
 import { projectsApi } from '../api/projects'
 import { Link, useNavigate } from 'react-router-dom'
+import { Badge } from '../components/common'
+import { Button } from '../components/common'
 
-const statusColors: Record<string, { bg: string; text: string }> = {
-  design: { bg: 'bg-purple-100', text: 'text-purple-700' },
-  active: { bg: 'bg-green-100', text: 'text-green-700' },
-  paused: { bg: 'bg-yellow-100', text: 'text-yellow-700' },
-  completed: { bg: 'bg-blue-100', text: 'text-blue-700' },
+const statusBadgeColors: Record<string, string> = {
+  design: '#8B5CF6',
+  active: '#22C55E',
+  paused: '#F59E0B',
+  completed: '#3B82F6',
 }
 
 export default function DashboardPage() {
@@ -32,28 +34,22 @@ export default function DashboardPage() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <h2 className="text-2xl font-bold text-text-primary">Projects</h2>
-        <button
-          onClick={() => navigate('/architect')}
-          className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-light"
-        >
+        <Button onClick={() => navigate('/architect')}>
           + New Project
-        </button>
+        </Button>
       </div>
 
       {projects?.length === 0 ? (
         <div className="rounded-lg border border-dashed border-border p-12 text-center">
           <p className="text-text-secondary mb-4">No projects yet. Start by creating one with the Architect.</p>
-          <button
-            onClick={() => navigate('/architect')}
-            className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-light"
-          >
+          <Button onClick={() => navigate('/architect')}>
             Start with Architect
-          </button>
+          </Button>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {projects?.map((project) => {
-            const colors = statusColors[project.status] || statusColors.design
+            const badgeColor = statusBadgeColors[project.status] || statusBadgeColors.design
             const phaseCount = project.phases.length
 
             return (
@@ -64,9 +60,7 @@ export default function DashboardPage() {
               >
                 <div className="flex items-start justify-between mb-3">
                   <h3 className="text-lg font-semibold text-text-primary">{project.name}</h3>
-                  <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${colors.bg} ${colors.text}`}>
-                    {project.status}
-                  </span>
+                  <Badge color={badgeColor} label={project.status} />
                 </div>
                 <p className="text-sm text-text-secondary mb-3 line-clamp-2">{project.description}</p>
                 <div className="flex items-center justify-between text-xs text-text-tertiary">

@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { LLMConfigInput } from '../../types/architect'
+import { Button } from '../common'
 
 const MODEL_SUGGESTIONS = [
   'anthropic/claude-sonnet-4-20250514',
@@ -85,13 +86,13 @@ export default function LLMConfigForm({ onSubmit, disabled }: Props) {
         />
       </div>
 
-      <button
+      <Button
         type="submit"
         disabled={disabled || !apiKey.trim()}
-        className="w-full rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-light disabled:opacity-50"
+        className="w-full"
       >
         Start Session
-      </button>
+      </Button>
     </form>
   )
 }

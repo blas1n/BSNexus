@@ -1,22 +1,12 @@
 import type { Task, TaskStatus } from '../../types/task'
 import { tasksApi } from '../../api/tasks'
 import { useBoardStore } from '../../stores/boardStore'
+import { Modal, Badge, Button } from '../common'
 
 const allowedTransitions: Partial<Record<TaskStatus, { label: string; to: TaskStatus; color: string }[]>> = {
   rejected: [{ label: 'Retry', to: 'ready', color: 'bg-accent hover:bg-accent-light' }],
   ready: [{ label: 'Queue', to: 'queued', color: 'bg-yellow-600 hover:bg-yellow-700' }],
   blocked: [{ label: 'Unblock', to: 'ready', color: 'bg-accent hover:bg-accent-light' }],
-}
-
-const statusBadgeColors: Record<string, string> = {
-  waiting: 'bg-gray-100 text-gray-700',
-  ready: 'bg-blue-100 text-blue-700',
-  queued: 'bg-yellow-100 text-yellow-700',
-  in_progress: 'bg-orange-100 text-orange-700',
-  review: 'bg-purple-100 text-purple-700',
-  done: 'bg-green-100 text-green-700',
-  rejected: 'bg-red-100 text-red-700',
-  blocked: 'bg-red-50 text-red-600',
 }
 
 interface Props {
@@ -42,126 +32,109 @@ export default function TaskDetail({ task, onClose }: Props) {
     }
   }
 
+  const footer = transitions.length > 0 ? (
+    <>
+      {transitions.map((t) => (
+        <Button
+          key={t.to}
+          onClick={() => handleTransition(t.to)}
+          className={`${t.color} text-white`}
+          size="md"
+        >
+          {t.label} &rarr; {t.to}
+        </Button>
+      ))}
+    </>
+  ) : undefined
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
-      <div
-        className="w-full max-w-lg max-h-[80vh] overflow-y-auto rounded-lg bg-bg-card p-6 shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div className="mb-4 flex items-start justify-between">
-          <div>
-            <h2 className="text-lg font-semibold text-text-primary">{task.title}</h2>
-            <div className="mt-1 flex items-center gap-2">
-              <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${statusBadgeColors[task.status]}`}>
-                {task.status}
-              </span>
-              <span className="rounded-full bg-bg-elevated px-2 py-0.5 text-xs font-medium text-text-secondary">
-                {task.priority}
-              </span>
-              <span className="text-xs text-text-tertiary">v{task.version}</span>
-            </div>
-          </div>
-          <button onClick={onClose} className="text-text-tertiary hover:text-text-secondary text-xl leading-none">
-            &times;
-          </button>
+    <Modal open={true} onClose={onClose} title={task.title} footer={footer} width={520}>
+      {/* Status and priority */}
+      <div className="mb-4 flex items-center gap-2">
+        <Badge color={task.status} label={task.status} />
+        <Badge color={task.priority} label={task.priority} />
+        <span className="text-xs text-text-tertiary">v{task.version}</span>
+      </div>
+
+      {/* Description */}
+      {task.description && (
+        <div className="mb-4">
+          <h3 className="text-sm font-medium text-text-primary mb-1">Description</h3>
+          <p className="text-sm text-text-secondary whitespace-pre-wrap">{task.description}</p>
         </div>
+      )}
 
-        {/* Description */}
-        {task.description && (
-          <div className="mb-4">
-            <h3 className="text-sm font-medium text-text-primary mb-1">Description</h3>
-            <p className="text-sm text-text-secondary whitespace-pre-wrap">{task.description}</p>
-          </div>
-        )}
-
-        {/* Details grid */}
-        <div className="mb-4 grid grid-cols-2 gap-3 text-sm">
-          <div>
-            <span className="font-medium text-text-primary">Phase ID</span>
-            <p className="text-text-secondary truncate">{task.phase_id}</p>
-          </div>
-          {task.worker_id && (
-            <div>
-              <span className="font-medium text-text-primary">Worker</span>
-              <p className="text-text-secondary truncate">{task.worker_id}</p>
-            </div>
-          )}
-          {task.reviewer_id && (
-            <div>
-              <span className="font-medium text-text-primary">Reviewer</span>
-              <p className="text-text-secondary truncate">{task.reviewer_id}</p>
-            </div>
-          )}
-          {task.branch_name && (
-            <div>
-              <span className="font-medium text-text-primary">Branch</span>
-              <p className="text-text-secondary truncate">{task.branch_name}</p>
-            </div>
-          )}
-          <div>
-            <span className="font-medium text-text-primary">Created</span>
-            <p className="text-text-secondary">{new Date(task.created_at).toLocaleString()}</p>
-          </div>
-          {task.started_at && (
-            <div>
-              <span className="font-medium text-text-primary">Started</span>
-              <p className="text-text-secondary">{new Date(task.started_at).toLocaleString()}</p>
-            </div>
-          )}
-          {task.completed_at && (
-            <div>
-              <span className="font-medium text-text-primary">Completed</span>
-              <p className="text-text-secondary">{new Date(task.completed_at).toLocaleString()}</p>
-            </div>
-          )}
+      {/* Details grid */}
+      <div className="mb-4 grid grid-cols-2 gap-3 text-sm">
+        <div>
+          <span className="font-medium text-text-primary">Phase ID</span>
+          <p className="text-text-secondary truncate">{task.phase_id}</p>
         </div>
-
-        {/* Dependencies */}
-        {task.depends_on.length > 0 && (
-          <div className="mb-4">
-            <h3 className="text-sm font-medium text-text-primary mb-1">Dependencies ({task.depends_on.length})</h3>
-            <div className="flex flex-wrap gap-1">
-              {task.depends_on.map((depId) => (
-                <span key={depId} className="rounded bg-bg-elevated px-2 py-0.5 text-xs text-text-secondary font-mono">
-                  {depId.slice(0, 8)}...
-                </span>
-              ))}
-            </div>
+        {task.worker_id && (
+          <div>
+            <span className="font-medium text-text-primary">Worker</span>
+            <p className="text-text-secondary truncate">{task.worker_id}</p>
           </div>
         )}
-
-        {/* Error message */}
-        {task.error_message && (
-          <div className="mb-4 rounded-md bg-red-50 p-3">
-            <h3 className="text-sm font-medium text-red-800 mb-1">Error</h3>
-            <p className="text-sm text-red-700 whitespace-pre-wrap">{task.error_message}</p>
+        {task.reviewer_id && (
+          <div>
+            <span className="font-medium text-text-primary">Reviewer</span>
+            <p className="text-text-secondary truncate">{task.reviewer_id}</p>
           </div>
         )}
-
-        {/* QA Result */}
-        {task.qa_result && (
-          <div className="mb-4 rounded-md bg-purple-50 p-3">
-            <h3 className="text-sm font-medium text-purple-800 mb-1">QA Result</h3>
-            <pre className="text-xs text-purple-700 whitespace-pre-wrap">{JSON.stringify(task.qa_result, null, 2)}</pre>
+        {task.branch_name && (
+          <div>
+            <span className="font-medium text-text-primary">Branch</span>
+            <p className="text-text-secondary truncate">{task.branch_name}</p>
           </div>
         )}
-
-        {/* Transition buttons */}
-        {transitions.length > 0 && (
-          <div className="flex gap-2 pt-4 border-t border-border">
-            {transitions.map((t) => (
-              <button
-                key={t.to}
-                onClick={() => handleTransition(t.to)}
-                className={`rounded-md px-4 py-2 text-sm font-medium text-white ${t.color}`}
-              >
-                {t.label} &rarr; {t.to}
-              </button>
-            ))}
+        <div>
+          <span className="font-medium text-text-primary">Created</span>
+          <p className="text-text-secondary">{new Date(task.created_at).toLocaleString()}</p>
+        </div>
+        {task.started_at && (
+          <div>
+            <span className="font-medium text-text-primary">Started</span>
+            <p className="text-text-secondary">{new Date(task.started_at).toLocaleString()}</p>
+          </div>
+        )}
+        {task.completed_at && (
+          <div>
+            <span className="font-medium text-text-primary">Completed</span>
+            <p className="text-text-secondary">{new Date(task.completed_at).toLocaleString()}</p>
           </div>
         )}
       </div>
-    </div>
+
+      {/* Dependencies */}
+      {task.depends_on.length > 0 && (
+        <div className="mb-4">
+          <h3 className="text-sm font-medium text-text-primary mb-1">Dependencies ({task.depends_on.length})</h3>
+          <div className="flex flex-wrap gap-1">
+            {task.depends_on.map((depId) => (
+              <span key={depId} className="rounded bg-bg-elevated px-2 py-0.5 text-xs text-text-secondary font-mono">
+                {depId.slice(0, 8)}...
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Error message */}
+      {task.error_message && (
+        <div className="mb-4 rounded-md bg-red-50 p-3">
+          <h3 className="text-sm font-medium text-red-800 mb-1">Error</h3>
+          <p className="text-sm text-red-700 whitespace-pre-wrap">{task.error_message}</p>
+        </div>
+      )}
+
+      {/* QA Result */}
+      {task.qa_result && (
+        <div className="mb-4 rounded-md bg-purple-50 p-3">
+          <h3 className="text-sm font-medium text-purple-800 mb-1">QA Result</h3>
+          <pre className="text-xs text-purple-700 whitespace-pre-wrap">{JSON.stringify(task.qa_result, null, 2)}</pre>
+        </div>
+      )}
+    </Modal>
   )
 }
