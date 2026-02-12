@@ -23,10 +23,10 @@ export default function BoardStats({ projectName }: Props) {
           </div>
 
           <div className="flex items-center gap-2">
-            <div className="w-32 h-2 bg-bg-hover rounded-full overflow-hidden">
+            <div className="w-32 h-2 bg-bg-elevated rounded-full overflow-hidden">
               <div
-                className="h-full bg-green-500 rounded-full transition-all duration-500"
-                style={{ width: `${completionRate}%` }}
+                className="h-full rounded-full transition-all duration-500"
+                style={{ width: `${completionRate}%`, backgroundColor: 'var(--status-done)' }}
               />
             </div>
             <span className="text-sm text-text-secondary">

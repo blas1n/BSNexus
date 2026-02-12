@@ -3,10 +3,10 @@ import { tasksApi } from '../../api/tasks'
 import { useBoardStore } from '../../stores/boardStore'
 import { Modal, Badge, Button } from '../common'
 
-const allowedTransitions: Partial<Record<TaskStatus, { label: string; to: TaskStatus; color: string }[]>> = {
-  rejected: [{ label: 'Retry', to: 'ready', color: 'bg-accent hover:bg-accent-light' }],
-  ready: [{ label: 'Queue', to: 'queued', color: 'bg-yellow-600 hover:bg-yellow-700' }],
-  blocked: [{ label: 'Unblock', to: 'ready', color: 'bg-accent hover:bg-accent-light' }],
+const allowedTransitions: Partial<Record<TaskStatus, { label: string; to: TaskStatus }[]>> = {
+  rejected: [{ label: 'Retry', to: 'ready' }],
+  ready: [{ label: 'Queue', to: 'queued' }],
+  blocked: [{ label: 'Unblock', to: 'ready' }],
 }
 
 interface Props {
@@ -38,7 +38,7 @@ export default function TaskDetail({ task, onClose }: Props) {
         <Button
           key={t.to}
           onClick={() => handleTransition(t.to)}
-          className={`${t.color} text-white`}
+          variant="primary"
           size="md"
         >
           {t.label} &rarr; {t.to}
@@ -59,49 +59,49 @@ export default function TaskDetail({ task, onClose }: Props) {
       {/* Description */}
       {task.description && (
         <div className="mb-4">
-          <h3 className="text-sm font-medium text-text-primary mb-1">Description</h3>
-          <p className="text-sm text-text-secondary whitespace-pre-wrap">{task.description}</p>
+          <h3 className="text-sm font-medium text-text-secondary mb-1">Description</h3>
+          <p className="text-sm text-text-primary whitespace-pre-wrap">{task.description}</p>
         </div>
       )}
 
       {/* Details grid */}
       <div className="mb-4 grid grid-cols-2 gap-3 text-sm">
         <div>
-          <span className="font-medium text-text-primary">Phase ID</span>
-          <p className="text-text-secondary truncate">{task.phase_id}</p>
+          <span className="text-text-secondary">Phase ID</span>
+          <p className="text-text-primary truncate">{task.phase_id}</p>
         </div>
         {task.worker_id && (
           <div>
-            <span className="font-medium text-text-primary">Worker</span>
-            <p className="text-text-secondary truncate">{task.worker_id}</p>
+            <span className="text-text-secondary">Worker</span>
+            <p className="text-text-primary truncate">{task.worker_id}</p>
           </div>
         )}
         {task.reviewer_id && (
           <div>
-            <span className="font-medium text-text-primary">Reviewer</span>
-            <p className="text-text-secondary truncate">{task.reviewer_id}</p>
+            <span className="text-text-secondary">Reviewer</span>
+            <p className="text-text-primary truncate">{task.reviewer_id}</p>
           </div>
         )}
         {task.branch_name && (
           <div>
-            <span className="font-medium text-text-primary">Branch</span>
-            <p className="text-text-secondary truncate">{task.branch_name}</p>
+            <span className="text-text-secondary">Branch</span>
+            <p className="text-text-primary truncate">{task.branch_name}</p>
           </div>
         )}
         <div>
-          <span className="font-medium text-text-primary">Created</span>
-          <p className="text-text-secondary">{new Date(task.created_at).toLocaleString()}</p>
+          <span className="text-text-secondary">Created</span>
+          <p className="text-text-primary">{new Date(task.created_at).toLocaleString()}</p>
         </div>
         {task.started_at && (
           <div>
-            <span className="font-medium text-text-primary">Started</span>
-            <p className="text-text-secondary">{new Date(task.started_at).toLocaleString()}</p>
+            <span className="text-text-secondary">Started</span>
+            <p className="text-text-primary">{new Date(task.started_at).toLocaleString()}</p>
           </div>
         )}
         {task.completed_at && (
           <div>
-            <span className="font-medium text-text-primary">Completed</span>
-            <p className="text-text-secondary">{new Date(task.completed_at).toLocaleString()}</p>
+            <span className="text-text-secondary">Completed</span>
+            <p className="text-text-primary">{new Date(task.completed_at).toLocaleString()}</p>
           </div>
         )}
       </div>
@@ -109,7 +109,7 @@ export default function TaskDetail({ task, onClose }: Props) {
       {/* Dependencies */}
       {task.depends_on.length > 0 && (
         <div className="mb-4">
-          <h3 className="text-sm font-medium text-text-primary mb-1">Dependencies ({task.depends_on.length})</h3>
+          <h3 className="text-sm font-medium text-text-secondary mb-1">Dependencies ({task.depends_on.length})</h3>
           <div className="flex flex-wrap gap-1">
             {task.depends_on.map((depId) => (
               <span key={depId} className="rounded bg-bg-elevated px-2 py-0.5 text-xs text-text-secondary font-mono">
@@ -122,17 +122,39 @@ export default function TaskDetail({ task, onClose }: Props) {
 
       {/* Error message */}
       {task.error_message && (
-        <div className="mb-4 rounded-md bg-red-50 p-3">
-          <h3 className="text-sm font-medium text-red-800 mb-1">Error</h3>
-          <p className="text-sm text-red-700 whitespace-pre-wrap">{task.error_message}</p>
+        <div
+          className="mb-4 rounded-md border p-3"
+          style={{
+            backgroundColor: 'color-mix(in srgb, var(--status-rejected) 10%, transparent)',
+            borderColor: 'var(--status-rejected)',
+          }}
+        >
+          <h3
+            className="text-sm font-medium mb-1"
+            style={{ color: 'var(--status-rejected)' }}
+          >
+            Error
+          </h3>
+          <p className="text-sm text-text-primary whitespace-pre-wrap">{task.error_message}</p>
         </div>
       )}
 
       {/* QA Result */}
       {task.qa_result && (
-        <div className="mb-4 rounded-md bg-purple-50 p-3">
-          <h3 className="text-sm font-medium text-purple-800 mb-1">QA Result</h3>
-          <pre className="text-xs text-purple-700 whitespace-pre-wrap">{JSON.stringify(task.qa_result, null, 2)}</pre>
+        <div
+          className="mb-4 rounded-md border p-3"
+          style={{
+            backgroundColor: 'color-mix(in srgb, var(--status-review) 10%, transparent)',
+            borderColor: 'var(--status-review)',
+          }}
+        >
+          <h3
+            className="text-sm font-medium mb-1"
+            style={{ color: 'var(--status-review)' }}
+          >
+            QA Result
+          </h3>
+          <pre className="text-xs text-text-primary whitespace-pre-wrap">{JSON.stringify(task.qa_result, null, 2)}</pre>
         </div>
       )}
     </Modal>

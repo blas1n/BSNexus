@@ -67,7 +67,10 @@ function BoardContent({ projectId }: { projectId: string }) {
         title={project?.name || 'Board'}
         action={
           <div className="flex items-center gap-2">
-            <span className={`inline-block w-2 h-2 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`} />
+            <span
+              className="inline-block w-2 h-2 rounded-full"
+              style={{ backgroundColor: isConnected ? 'var(--status-done)' : 'var(--status-rejected)' }}
+            />
             <span className="text-xs text-text-secondary">{isConnected ? 'Live' : 'Offline'}</span>
           </div>
         }

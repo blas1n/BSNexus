@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { pmApi } from '../../api/pm'
-import { Button } from '../common'
+import { Button, Badge } from '../common'
 
 interface Props {
   projectId: string
@@ -55,36 +55,40 @@ export default function PMControl({ projectId }: Props) {
   const isRunning = status?.running ?? false
 
   return (
-    <div className="rounded-lg border border-border bg-bg-card p-4">
+    <div className="rounded-lg border border-border bg-bg-surface p-4">
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-sm font-semibold text-text-primary">PM Control</h3>
-        <div className="flex items-center gap-1.5">
-          <span className={`inline-block w-2 h-2 rounded-full ${isRunning ? 'bg-green-500 animate-pulse' : 'bg-gray-400'}`} />
-          <span className="text-xs text-text-secondary">{isRunning ? 'Running' : 'Paused'}</span>
-        </div>
+        {isRunning ? (
+          <Badge color="in_progress" label="Running" />
+        ) : (
+          <Badge color="waiting" label="Paused" />
+        )}
       </div>
 
       <div className="flex gap-2 mb-3">
         {isRunning ? (
           <Button
+            variant="secondary"
             onClick={() => pauseMutation.mutate()}
             disabled={pauseMutation.isPending}
             size="sm"
-            className="flex-1 bg-yellow-500 hover:bg-yellow-600"
+            className="flex-1"
           >
             Pause
           </Button>
         ) : (
           <Button
+            variant="secondary"
             onClick={() => startMutation.mutate()}
             disabled={startMutation.isPending}
             size="sm"
-            className="flex-1 bg-green-600 hover:bg-green-700"
+            className="flex-1"
           >
             Start
           </Button>
         )}
         <Button
+          variant="primary"
           onClick={() => queueMutation.mutate()}
           disabled={queueMutation.isPending}
           size="sm"
@@ -97,9 +101,9 @@ export default function PMControl({ projectId }: Props) {
       {logs.length > 0 && (
         <div className="border-t border-border-subtle pt-2">
           <p className="text-xs font-medium text-text-secondary mb-1">Recent activity</p>
-          <div className="space-y-0.5">
+          <div className="bg-bg-elevated rounded-md p-3 space-y-0.5">
             {logs.map((log, i) => (
-              <p key={i} className="text-xs text-text-tertiary">{log}</p>
+              <p key={i} className="text-xs text-text-secondary">{log}</p>
             ))}
           </div>
         </div>

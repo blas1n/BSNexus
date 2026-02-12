@@ -10,13 +10,13 @@ export default function TaskCard({ task, onClick }: Props) {
   return (
     <div
       onClick={onClick}
-      className="cursor-pointer rounded-lg border border-border bg-bg-card p-3 shadow-sm hover:shadow-md transition-all duration-200"
+      className="cursor-pointer rounded-lg border border-border bg-bg-card p-3 hover:bg-bg-hover transition-colors"
     >
       <div className="flex items-start justify-between gap-2 mb-2">
         <h4 className="text-sm font-medium text-text-primary leading-snug">{task.title}</h4>
       </div>
       <div className="flex items-center gap-2 flex-wrap">
-        <Badge color={task.priority} label={task.priority} />
+        <Badge color={task.priority} label={task.priority} size="sm" />
         {task.depends_on.length > 0 && (
           <span
             className="inline-flex items-center gap-0.5 text-xs text-text-tertiary"
@@ -34,7 +34,7 @@ export default function TaskCard({ task, onClick }: Props) {
           </span>
         )}
         {task.worker_id && (
-          <span className="inline-flex items-center gap-0.5 text-xs text-text-tertiary" title="Worker assigned">
+          <span className="inline-flex items-center gap-0.5 text-xs text-accent-text" title="Worker assigned">
             <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path
                 strokeLinecap="round"
