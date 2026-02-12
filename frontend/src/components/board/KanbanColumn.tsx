@@ -37,7 +37,7 @@ export default function KanbanColumn({ title, status, tasks, onTaskClick }: Prop
           <TaskCard key={task.id} task={task} onClick={() => onTaskClick?.(task)} />
         ))}
         {tasks.length === 0 && (
-          <div className="rounded-lg border border-dashed border-gray-200 p-4 text-center text-xs text-gray-400">
+          <div className="rounded-lg border border-dashed border-border p-4 text-center text-xs text-text-tertiary">
             No tasks
           </div>
         )}

@@ -9,10 +9,10 @@ interface Props {
 
 export default function SessionList({ sessions, activeSessionId, onSelect, onNew }: Props) {
   return (
-    <div className="w-64 border-r border-gray-200 bg-gray-50 p-4 flex flex-col h-full">
+    <div className="w-64 border-r border-border bg-bg-surface p-4 flex flex-col h-full">
       <button
         onClick={onNew}
-        className="w-full mb-4 rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
+        className="w-full mb-4 rounded-md bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent-light"
       >
         + New Session
       </button>
@@ -23,8 +23,8 @@ export default function SessionList({ sessions, activeSessionId, onSelect, onNew
             onClick={() => onSelect(session.id)}
             className={`w-full text-left rounded-md px-3 py-2 text-sm ${
               activeSessionId === session.id
-                ? 'bg-blue-100 text-blue-700 font-medium'
-                : 'text-gray-700 hover:bg-gray-100'
+                ? 'bg-accent/10 text-accent-text font-medium'
+                : 'text-text-primary hover:bg-bg-hover'
             }`}
           >
             <div className="truncate">
@@ -32,7 +32,7 @@ export default function SessionList({ sessions, activeSessionId, onSelect, onNew
                 ? session.messages[0].content.slice(0, 40) + '...'
                 : 'New session'}
             </div>
-            <div className="text-xs text-gray-400 mt-0.5">
+            <div className="text-xs text-text-tertiary mt-0.5">
               {new Date(session.created_at).toLocaleDateString()}
             </div>
           </button>

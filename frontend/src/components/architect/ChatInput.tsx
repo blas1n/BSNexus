@@ -41,12 +41,12 @@ export default function ChatInput({ onSend, onFinalize, disabled, showFinalize }
         placeholder="Type a message... (Enter to send, Shift+Enter for newline)"
         disabled={disabled}
         rows={1}
-        className="flex-1 resize-none rounded-lg border border-gray-300 px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
+        className="flex-1 resize-none rounded-lg border border-border px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50"
       />
       <button
         onClick={handleSubmit}
         disabled={disabled || !input.trim()}
-        className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+        className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-light disabled:opacity-50"
       >
         Send
       </button>

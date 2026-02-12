@@ -54,12 +54,12 @@ export default function PMControl({ projectId }: Props) {
   const isRunning = status?.running ?? false
 
   return (
-    <div className="rounded-lg border border-gray-200 bg-white p-4">
+    <div className="rounded-lg border border-border bg-bg-card p-4">
       <div className="flex items-center justify-between mb-3">
-        <h3 className="text-sm font-semibold text-gray-700">PM Control</h3>
+        <h3 className="text-sm font-semibold text-text-primary">PM Control</h3>
         <div className="flex items-center gap-1.5">
           <span className={`inline-block w-2 h-2 rounded-full ${isRunning ? 'bg-green-500 animate-pulse' : 'bg-gray-400'}`} />
-          <span className="text-xs text-gray-500">{isRunning ? 'Running' : 'Paused'}</span>
+          <span className="text-xs text-text-secondary">{isRunning ? 'Running' : 'Paused'}</span>
         </div>
       </div>
 
@@ -84,18 +84,18 @@ export default function PMControl({ projectId }: Props) {
         <button
           onClick={() => queueMutation.mutate()}
           disabled={queueMutation.isPending}
-          className="flex-1 rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+          className="flex-1 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white hover:bg-accent-light disabled:opacity-50"
         >
           Queue Next
         </button>
       </div>
 
       {logs.length > 0 && (
-        <div className="border-t border-gray-100 pt-2">
-          <p className="text-xs font-medium text-gray-500 mb-1">Recent activity</p>
+        <div className="border-t border-border-subtle pt-2">
+          <p className="text-xs font-medium text-text-secondary mb-1">Recent activity</p>
           <div className="space-y-0.5">
             {logs.map((log, i) => (
-              <p key={i} className="text-xs text-gray-400">{log}</p>
+              <p key={i} className="text-xs text-text-tertiary">{log}</p>
             ))}
           </div>
         </div>

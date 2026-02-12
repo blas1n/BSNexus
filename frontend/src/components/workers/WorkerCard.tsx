@@ -21,15 +21,15 @@ export default function WorkerCard({ worker }: Props) {
   const capabilities = worker.capabilities ? Object.keys(worker.capabilities) : []
 
   return (
-    <div className={`rounded-lg border border-gray-200 bg-white p-4 ${worker.status === 'offline' ? 'opacity-60' : ''}`}>
+    <div className={`rounded-lg border border-border bg-bg-card p-4 ${worker.status === 'offline' ? 'opacity-60' : ''}`}>
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
-          <span className="inline-flex items-center justify-center w-8 h-8 rounded-lg bg-gray-100 text-sm font-bold text-gray-600">
+          <span className="inline-flex items-center justify-center w-8 h-8 rounded-lg bg-bg-elevated text-sm font-bold text-text-secondary">
             {platformIcons[worker.platform] || '?'}
           </span>
           <div>
-            <h3 className="text-sm font-semibold text-gray-900">{worker.name}</h3>
-            <p className="text-xs text-gray-400">{worker.platform} / {worker.executor_type}</p>
+            <h3 className="text-sm font-semibold text-text-primary">{worker.name}</h3>
+            <p className="text-xs text-text-tertiary">{worker.platform} / {worker.executor_type}</p>
           </div>
         </div>
         <div className="flex items-center gap-1.5">
@@ -41,7 +41,7 @@ export default function WorkerCard({ worker }: Props) {
       {capabilities.length > 0 && (
         <div className="flex flex-wrap gap-1 mb-3">
           {capabilities.map((cap) => (
-            <span key={cap} className="rounded bg-blue-50 px-1.5 py-0.5 text-xs text-blue-600">
+            <span key={cap} className="rounded bg-accent/10 px-1.5 py-0.5 text-xs text-accent-text">
               {cap}
             </span>
           ))}
@@ -56,7 +56,7 @@ export default function WorkerCard({ worker }: Props) {
         </div>
       )}
 
-      <div className="text-xs text-gray-400 space-y-0.5">
+      <div className="text-xs text-text-tertiary space-y-0.5">
         {worker.last_heartbeat && (
           <p>Last heartbeat: {new Date(worker.last_heartbeat).toLocaleString()}</p>
         )}

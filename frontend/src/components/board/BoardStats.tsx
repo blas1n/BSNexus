@@ -21,25 +21,25 @@ export default function BoardStats({ projectName }: Props) {
   const activeWorkers = Object.values(workers).reduce((sum, count) => sum + count, 0)
 
   return (
-    <div className="bg-white rounded-lg border border-gray-200 p-4 mb-4">
+    <div className="bg-bg-card rounded-lg border border-border p-4 mb-4">
       <div className="flex items-center justify-between flex-wrap gap-4">
         {projectName && (
-          <h3 className="text-lg font-semibold text-gray-900">{projectName}</h3>
+          <h3 className="text-lg font-semibold text-text-primary">{projectName}</h3>
         )}
 
         <div className="flex items-center gap-6">
-          <div className="text-sm text-gray-600">
+          <div className="text-sm text-text-secondary">
             <span className="font-medium">{total}</span> tasks
           </div>
 
           <div className="flex items-center gap-2">
-            <div className="w-32 h-2 bg-gray-200 rounded-full overflow-hidden">
+            <div className="w-32 h-2 bg-bg-hover rounded-full overflow-hidden">
               <div
                 className="h-full bg-green-500 rounded-full transition-all duration-500"
                 style={{ width: `${completionRate}%` }}
               />
             </div>
-            <span className="text-sm text-gray-600">
+            <span className="text-sm text-text-secondary">
               {done}/{total} ({Math.round(completionRate)}%)
             </span>
           </div>
@@ -50,12 +50,12 @@ export default function BoardStats({ projectName }: Props) {
                 <span
                   className={`inline-block w-2.5 h-2.5 rounded-full ${statusColors[status] || 'bg-gray-300'}`}
                 />
-                <span className="text-xs text-gray-500">{count}</span>
+                <span className="text-xs text-text-secondary">{count}</span>
               </div>
             ))}
           </div>
 
-          <div className="text-sm text-gray-600">
+          <div className="text-sm text-text-secondary">
             <span className="font-medium">{activeWorkers}</span> workers
           </div>
         </div>

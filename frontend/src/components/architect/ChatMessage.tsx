@@ -14,7 +14,7 @@ export default function ChatMessage({ message }: Props) {
     <div className={`flex ${isAssistant ? 'justify-start' : 'justify-end'} mb-4`}>
       <div
         className={`max-w-[70%] rounded-lg px-4 py-3 ${
-          isAssistant ? 'bg-gray-100 text-gray-900' : 'bg-blue-600 text-white'
+          isAssistant ? 'bg-bg-elevated text-text-primary' : 'bg-accent text-white'
         }`}
       >
         {isAssistant ? (
@@ -42,7 +42,7 @@ export default function ChatMessage({ message }: Props) {
               {message.content}
             </ReactMarkdown>
             {message.isStreaming && (
-              <span className="inline-block w-2 h-4 bg-gray-400 animate-pulse ml-0.5" />
+              <span className="inline-block w-2 h-4 bg-text-tertiary animate-pulse ml-0.5" />
             )}
           </div>
         ) : (

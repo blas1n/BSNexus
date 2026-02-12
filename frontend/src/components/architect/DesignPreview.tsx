@@ -7,23 +7,23 @@ interface Props {
 
 export default function DesignPreview({ project, onConfirm }: Props) {
   return (
-    <div className="rounded-lg border border-gray-200 bg-white p-4 space-y-4">
+    <div className="rounded-lg border border-border bg-bg-card p-4 space-y-4">
       <div className="flex items-center justify-between">
-        <h3 className="text-lg font-semibold text-gray-900">{project.name}</h3>
+        <h3 className="text-lg font-semibold text-text-primary">{project.name}</h3>
         <span className="rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-700">
           {project.status}
         </span>
       </div>
-      <p className="text-sm text-gray-600">{project.description}</p>
+      <p className="text-sm text-text-secondary">{project.description}</p>
 
       {project.phases.map((phase) => (
-        <div key={phase.id} className="border-t border-gray-100 pt-3">
+        <div key={phase.id} className="border-t border-border-subtle pt-3">
           <div className="flex items-center gap-2 mb-2">
-            <span className="text-sm font-semibold text-gray-800">Phase {phase.order}: {phase.name}</span>
-            <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-600">{phase.status}</span>
+            <span className="text-sm font-semibold text-text-primary">Phase {phase.order}: {phase.name}</span>
+            <span className="rounded-full bg-bg-elevated px-2 py-0.5 text-xs text-text-secondary">{phase.status}</span>
           </div>
           {phase.description && (
-            <p className="text-xs text-gray-500 mb-2">{phase.description}</p>
+            <p className="text-xs text-text-secondary mb-2">{phase.description}</p>
           )}
         </div>
       ))}

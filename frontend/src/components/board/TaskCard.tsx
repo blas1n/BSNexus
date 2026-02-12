@@ -23,10 +23,10 @@ export default function TaskCard({ task, onClick }: Props) {
   return (
     <div
       onClick={onClick}
-      className="cursor-pointer rounded-lg border border-gray-200 bg-white p-3 shadow-sm hover:shadow-md transition-all duration-200"
+      className="cursor-pointer rounded-lg border border-border bg-bg-card p-3 shadow-sm hover:shadow-md transition-all duration-200"
     >
       <div className="flex items-start justify-between gap-2 mb-2">
-        <h4 className="text-sm font-medium text-gray-900 leading-snug">{task.title}</h4>
+        <h4 className="text-sm font-medium text-text-primary leading-snug">{task.title}</h4>
         <span
           className={`inline-block w-2 h-2 rounded-full flex-shrink-0 mt-1.5 ${priorityDots[task.priority]}`}
           title={task.priority}
@@ -38,7 +38,7 @@ export default function TaskCard({ task, onClick }: Props) {
         </span>
         {task.depends_on.length > 0 && (
           <span
-            className="inline-flex items-center gap-0.5 text-xs text-gray-400"
+            className="inline-flex items-center gap-0.5 text-xs text-text-tertiary"
             title={`Depends on ${task.depends_on.length} task(s)`}
           >
             <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -53,7 +53,7 @@ export default function TaskCard({ task, onClick }: Props) {
           </span>
         )}
         {task.worker_id && (
-          <span className="inline-flex items-center gap-0.5 text-xs text-gray-400" title="Worker assigned">
+          <span className="inline-flex items-center gap-0.5 text-xs text-text-tertiary" title="Worker assigned">
             <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path
                 strokeLinecap="round"

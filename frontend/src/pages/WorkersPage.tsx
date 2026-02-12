@@ -15,7 +15,7 @@ export default function WorkersPage() {
   const offline = workerList.filter((w) => w.status === 'offline').length
 
   if (isLoading) {
-    return <div className="text-gray-500">Loading workers...</div>
+    return <div className="text-text-secondary">Loading workers...</div>
   }
 
   if (error) {
@@ -28,13 +28,13 @@ export default function WorkersPage() {
 
   return (
     <div>
-      <h2 className="text-2xl font-bold text-gray-900 mb-4">Workers</h2>
+      <h2 className="text-2xl font-bold text-text-primary mb-4">Workers</h2>
 
       {/* Summary stats */}
       <div className="grid grid-cols-4 gap-4 mb-6">
-        <div className="rounded-lg border border-gray-200 bg-white p-4 text-center">
-          <p className="text-2xl font-bold text-gray-900">{workerList.length}</p>
-          <p className="text-sm text-gray-500">Total</p>
+        <div className="rounded-lg border border-border bg-bg-card p-4 text-center">
+          <p className="text-2xl font-bold text-text-primary">{workerList.length}</p>
+          <p className="text-sm text-text-secondary">Total</p>
         </div>
         <div className="rounded-lg border border-green-200 bg-green-50 p-4 text-center">
           <p className="text-2xl font-bold text-green-700">{idle}</p>
@@ -44,9 +44,9 @@ export default function WorkersPage() {
           <p className="text-2xl font-bold text-orange-700">{busy}</p>
           <p className="text-sm text-orange-600">Busy</p>
         </div>
-        <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 text-center">
-          <p className="text-2xl font-bold text-gray-500">{offline}</p>
-          <p className="text-sm text-gray-400">Offline</p>
+        <div className="rounded-lg border border-border bg-bg-surface p-4 text-center">
+          <p className="text-2xl font-bold text-text-secondary">{offline}</p>
+          <p className="text-sm text-text-tertiary">Offline</p>
         </div>
       </div>
 

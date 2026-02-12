@@ -37,8 +37,8 @@ export default function WorkerList({ workers }: Props) {
             onClick={() => setFilter(f.value)}
             className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
               filter === f.value
-                ? 'bg-blue-100 text-blue-700'
-                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                ? 'bg-accent/10 text-accent-text'
+                : 'bg-bg-elevated text-text-secondary hover:bg-bg-hover'
             }`}
           >
             {f.label} ({counts[f.value]})
@@ -48,7 +48,7 @@ export default function WorkerList({ workers }: Props) {
 
       {/* Worker grid */}
       {filtered.length === 0 ? (
-        <div className="rounded-lg border border-dashed border-gray-200 p-8 text-center text-gray-400">
+        <div className="rounded-lg border border-dashed border-border p-8 text-center text-text-tertiary">
           No {filter === 'all' ? '' : filter} workers found
         </div>
       ) : (
