@@ -1,21 +1,23 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { useArchitectStore } from '../stores/architectStore'
 import type { ChatMessage as ChatMessageType } from '../stores/architectStore'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { architectApi } from '../api/architect'
-import type { LLMConfigInput, DesignSession } from '../types/architect'
+import type { DesignSession } from '../types/architect'
 import type { Project } from '../types/project'
 import ChatMessage from '../components/architect/ChatMessage'
 import ChatInput from '../components/architect/ChatInput'
 import SessionList from '../components/architect/SessionList'
-import LLMConfigForm from '../components/architect/LLMConfigForm'
+import NewSessionModal from '../components/architect/NewSessionModal'
 import FinalizeDialog from '../components/architect/FinalizeDialog'
 import DesignPreview from '../components/architect/DesignPreview'
+import Header from '../components/layout/Header'
 
 export default function ArchitectPage() {
   const { sessionId: paramSessionId } = useParams()
   const navigate = useNavigate()
+  const location = useLocation()
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   const {
@@ -34,9 +36,12 @@ export default function ArchitectPage() {
     clearMessages,
   } = useArchitectStore()
 
-  const [showConfig, setShowConfig] = useState(!sessionId)
+  const [newSessionModalOpen, setNewSessionModalOpen] = useState(false)
   const [showFinalizeDialog, setShowFinalizeDialog] = useState(false)
   const [finalizedProject, setFinalizedProject] = useState<Project | null>(null)
+
+  // Find the active session object for name display
+  const activeSession = sessions.find((s) => s.id === sessionId) || null
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -111,6 +116,17 @@ export default function ArchitectPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // Auto-open new session modal when navigated from dashboard
+  useEffect(() => {
+    const state = location.state as { openNewSession?: boolean } | null
+    if (state?.openNewSession) {
+      setNewSessionModalOpen(true)
+      // Clear the state so it doesn't re-trigger on back/forward navigation
+      navigate(location.pathname, { replace: true, state: {} })
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.state])
+
   // Load session from URL param
   useEffect(() => {
     if (paramSessionId && paramSessionId !== sessionId) {
@@ -123,7 +139,6 @@ export default function ArchitectPage() {
     try {
       const session: DesignSession = await architectApi.getSession(id)
       setSessionId(id)
-      setShowConfig(false)
       const chatMessages: ChatMessageType[] = session.messages.map((m) => ({
         id: m.id,
         role: m.role,
@@ -136,14 +151,22 @@ export default function ArchitectPage() {
     }
   }
 
-  const handleCreateSession = async (config: LLMConfigInput) => {
+  const handleCreateSession = async (config: { worker_id: string }) => {
     try {
-      const session = await architectApi.createSession({ llm_config: config })
+      const apiKey = sessionStorage.getItem('llm_api_key') || localStorage.getItem('llm_settings') || ''
+      const session = await architectApi.createSession({
+        llm_config: {
+          api_key: apiKey,
+        },
+        worker_id: config.worker_id,
+      })
       setSessionId(session.id)
-      setShowConfig(false)
+      setNewSessionModalOpen(false)
       clearMessages()
       setSessions([session, ...sessions])
       navigate(`/architect/${session.id}`)
+      // Load full session messages (includes system message)
+      loadSession(session.id)
     } catch {
       // Error creating session
     }
@@ -172,11 +195,7 @@ export default function ArchitectPage() {
   }
 
   const handleNewSession = () => {
-    setSessionId(null)
-    clearMessages()
-    setShowConfig(true)
-    setFinalizedProject(null)
-    navigate('/architect')
+    setNewSessionModalOpen(true)
   }
 
   const handleSelectSession = (id: string) => {
@@ -184,77 +203,106 @@ export default function ArchitectPage() {
     loadSession(id)
   }
 
-  // Show config form if no session
-  if (showConfig && !sessionId) {
+  const headerTitle = activeSession?.name || (sessionId ? 'Architect' : 'Architect')
+
+  // When no session is selected, show session list + empty state
+  if (!sessionId) {
     return (
-      <div className="flex h-[calc(100vh-8rem)]">
-        <SessionList
-          sessions={sessions}
-          activeSessionId={null}
-          onSelect={handleSelectSession}
-          onNew={handleNewSession}
-        />
-        <div className="flex-1 flex items-center justify-center">
-          <LLMConfigForm onSubmit={handleCreateSession} />
+      <>
+        <Header title="Architect" />
+        <div className="flex h-[calc(100vh-8rem)]">
+          <SessionList
+            sessions={sessions}
+            activeSessionId={null}
+            onSelect={handleSelectSession}
+            onNew={handleNewSession}
+          />
+          <div className="flex-1 flex items-center justify-center">
+            <div className="text-center space-y-4">
+              <div className="text-text-tertiary text-lg">No session selected</div>
+              <p className="text-text-muted text-sm">Select a session from the sidebar or create a new one.</p>
+            </div>
+          </div>
         </div>
-      </div>
+        <NewSessionModal
+          open={newSessionModalOpen}
+          onClose={() => setNewSessionModalOpen(false)}
+          onCreateSession={handleCreateSession}
+        />
+      </>
     )
   }
 
   return (
-    <div className="flex h-[calc(100vh-8rem)]">
-      <SessionList
-        sessions={sessions}
-        activeSessionId={sessionId}
-        onSelect={handleSelectSession}
-        onNew={handleNewSession}
+    <>
+      <Header
+        title={headerTitle}
+        action={
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2">
+              <span className={`inline-block w-2 h-2 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`} />
+              <span className="text-xs text-text-secondary">{isConnected ? 'Connected' : 'Disconnected'}</span>
+            </div>
+            {messages.length > 0 && !isStreaming && (
+              <button
+                onClick={() => setShowFinalizeDialog(true)}
+                className="px-3 py-1.5 text-sm font-medium rounded-md bg-green-600 text-white hover:bg-green-700 transition-colors"
+              >
+                Finalize
+              </button>
+            )}
+          </div>
+        }
       />
-      <div className="flex-1 flex flex-col">
-        {/* Connection status */}
-        <div className="px-4 py-2 border-b border-gray-200 flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-gray-900">Architect Chat</h2>
-          <div className="flex items-center gap-2">
-            <span className={`inline-block w-2 h-2 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`} />
-            <span className="text-xs text-gray-500">{isConnected ? 'Connected' : 'Disconnected'}</span>
+      <div className="flex h-[calc(100vh-8rem)]">
+        <SessionList
+          sessions={sessions}
+          activeSessionId={sessionId}
+          onSelect={handleSelectSession}
+          onNew={handleNewSession}
+        />
+        <div className="flex-1 flex flex-col">
+          {/* Messages area */}
+          <div className="flex-1 overflow-y-auto p-4 space-y-2">
+            {messages.map((msg) => (
+              <ChatMessage key={msg.id} message={msg} />
+            ))}
+            <div ref={messagesEndRef} />
+          </div>
+
+          {/* Input area */}
+          <div className="p-4 border-t border-border">
+            <ChatInput
+              onSend={handleSend}
+              disabled={isStreaming || !isConnected}
+            />
           </div>
         </div>
 
-        {/* Messages area */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-2">
-          {messages.map((msg) => (
-            <ChatMessage key={msg.id} message={msg} />
-          ))}
-          <div ref={messagesEndRef} />
-        </div>
+        {/* Design preview sidebar (when finalized) */}
+        {finalizedProject && (
+          <div className="w-80 border-l border-border overflow-y-auto p-4">
+            <DesignPreview
+              project={finalizedProject}
+              onConfirm={() => navigate(`/board/${finalizedProject.id}`)}
+            />
+          </div>
+        )}
 
-        {/* Input area */}
-        <div className="p-4 border-t border-gray-200">
-          <ChatInput
-            onSend={handleSend}
-            onFinalize={() => setShowFinalizeDialog(true)}
-            disabled={isStreaming || !isConnected}
-            showFinalize={messages.length > 0 && !isStreaming}
+        {/* Finalize dialog */}
+        {showFinalizeDialog && (
+          <FinalizeDialog
+            onConfirm={handleFinalize}
+            onCancel={() => setShowFinalizeDialog(false)}
           />
-        </div>
+        )}
       </div>
 
-      {/* Design preview sidebar (when finalized) */}
-      {finalizedProject && (
-        <div className="w-80 border-l border-gray-200 overflow-y-auto p-4">
-          <DesignPreview
-            project={finalizedProject}
-            onConfirm={() => navigate(`/board/${finalizedProject.id}`)}
-          />
-        </div>
-      )}
-
-      {/* Finalize dialog */}
-      {showFinalizeDialog && (
-        <FinalizeDialog
-          onConfirm={handleFinalize}
-          onCancel={() => setShowFinalizeDialog(false)}
-        />
-      )}
-    </div>
+      <NewSessionModal
+        open={newSessionModalOpen}
+        onClose={() => setNewSessionModalOpen(false)}
+        onCreateSession={handleCreateSession}
+      />
+    </>
   )
 }

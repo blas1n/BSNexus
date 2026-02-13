@@ -16,6 +16,7 @@ function App() {
           <Route element={<Layout />}>
             <Route path="/" element={<DashboardPage />} />
             <Route path="/architect/:sessionId?" element={<ArchitectPage />} />
+            <Route path="/board" element={<BoardPage />} />
             <Route path="/board/:projectId" element={<BoardPage />} />
             <Route path="/workers" element={<WorkersPage />} />
           </Route>

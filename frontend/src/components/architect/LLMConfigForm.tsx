@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { LLMConfigInput } from '../../types/architect'
+import { Button } from '../common'
 
 const MODEL_SUGGESTIONS = [
   'anthropic/claude-sonnet-4-20250514',
@@ -29,11 +30,11 @@ export default function LLMConfigForm({ onSubmit, disabled }: Props) {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="max-w-md mx-auto space-y-4 p-6 bg-white rounded-lg border border-gray-200">
-      <h3 className="text-lg font-semibold text-gray-900">Start Architect Session</h3>
+    <form onSubmit={handleSubmit} className="max-w-md mx-auto space-y-4 p-6 bg-bg-card rounded-lg border border-border">
+      <h3 className="text-lg font-semibold text-text-primary">Start Architect Session</h3>
 
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">API Key</label>
+        <label className="block text-sm font-medium text-text-primary mb-1">API Key</label>
         <input
           type="password"
           value={apiKey}
@@ -41,13 +42,13 @@ export default function LLMConfigForm({ onSubmit, disabled }: Props) {
           placeholder="sk-..."
           required
           disabled={disabled}
-          className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className="w-full rounded-md border border-border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent"
         />
-        <p className="mt-1 text-xs text-gray-400">Stored in sessionStorage only (cleared on tab close)</p>
+        <p className="mt-1 text-xs text-text-tertiary">Stored in sessionStorage only (cleared on tab close)</p>
       </div>
 
       <div className="relative">
-        <label className="block text-sm font-medium text-gray-700 mb-1">Model</label>
+        <label className="block text-sm font-medium text-text-primary mb-1">Model</label>
         <input
           type="text"
           value={model}
@@ -56,15 +57,15 @@ export default function LLMConfigForm({ onSubmit, disabled }: Props) {
           onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
           placeholder="e.g. openai/gpt-4o"
           disabled={disabled}
-          className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className="w-full rounded-md border border-border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent"
         />
         {showSuggestions && (
-          <ul className="absolute z-10 mt-1 w-full bg-white border border-gray-200 rounded-md shadow-lg">
+          <ul className="absolute z-10 mt-1 w-full bg-bg-card border border-border rounded-md shadow-lg">
             {MODEL_SUGGESTIONS.map((suggestion) => (
               <li
                 key={suggestion}
                 onMouseDown={() => { setModel(suggestion); setShowSuggestions(false) }}
-                className="px-3 py-2 text-sm hover:bg-blue-50 cursor-pointer"
+                className="px-3 py-2 text-sm hover:bg-accent/10 cursor-pointer"
               >
                 {suggestion}
               </li>
@@ -74,24 +75,24 @@ export default function LLMConfigForm({ onSubmit, disabled }: Props) {
       </div>
 
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">Base URL (optional)</label>
+        <label className="block text-sm font-medium text-text-primary mb-1">Base URL (optional)</label>
         <input
           type="text"
           value={baseUrl}
           onChange={(e) => setBaseUrl(e.target.value)}
           placeholder="https://your-litellm-proxy.com"
           disabled={disabled}
-          className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className="w-full rounded-md border border-border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent"
         />
       </div>
 
-      <button
+      <Button
         type="submit"
         disabled={disabled || !apiKey.trim()}
-        className="w-full rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+        className="w-full"
       >
         Start Session
-      </button>
+      </Button>
     </form>
   )
 }

@@ -26,6 +26,7 @@ dev = [
     "pytest-cov>=4.1.0",
     "httpx>=0.26.0",
     "ruff>=0.1.0",
+    "aiosqlite>=0.22.0",
 ]
 
 [tool.pytest.ini_options]
@@ -46,5 +47,5 @@ show_missing = true
 
 [dependency-groups]
 dev = [
-    "aiosqlite>=0.22.1",
+    "aiosqlite>=0.22.0",
 ]

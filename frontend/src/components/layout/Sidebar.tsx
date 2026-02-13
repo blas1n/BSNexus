@@ -1,41 +1,91 @@
-import { NavLink } from 'react-router-dom'
+import { useState } from 'react'
+import { NavLink, useLocation } from 'react-router-dom'
+import { LayoutDashboard, Bot, Kanban, Users, Settings, Sun, Moon, Monitor } from 'lucide-react'
+import { SettingsModal } from './SettingsModal'
+import { useThemeStore } from '../../stores/themeStore'
 
 const navItems = [
-  { to: '/', label: 'Dashboard', icon: 'D' },
-  { to: '/architect', label: 'Architect', icon: 'A' },
-  { to: '/workers', label: 'Workers', icon: 'W' },
+  { to: '/', label: 'Dashboard', icon: LayoutDashboard },
+  { to: '/architect', label: 'Architect', icon: Bot },
+  { to: '/board', label: 'Board', icon: Kanban },
+  { to: '/workers', label: 'Workers', icon: Users },
 ]
 
 export default function Sidebar() {
-  return (
-    <aside className="w-56 bg-gray-50 border-r border-gray-200 min-h-[calc(100vh-3.25rem)]">
-      <nav className="p-3 space-y-1">
-        {navItems.map((item) => (
-          <NavLink
-            key={item.to}
-            to={item.to}
-            end={item.to === '/'}
-            className={({ isActive }) =>
-              `flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
-                isActive
-                  ? 'bg-blue-50 text-blue-700'
-                  : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
-              }`
-            }
-          >
-            <span className="inline-flex items-center justify-center w-6 h-6 rounded bg-gray-200 text-xs font-bold text-gray-600">
-              {item.icon}
-            </span>
-            {item.label}
-          </NavLink>
-        ))}
-      </nav>
+  const location = useLocation()
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const { theme, setTheme } = useThemeStore()
 
-      <div className="absolute bottom-4 left-0 w-56 px-3">
-        <div className="rounded-lg bg-gray-100 px-3 py-2 text-xs text-gray-400">
-          Settings (coming soon)
+  const cycleTheme = () => {
+    const next = theme === 'light' ? 'dark' : theme === 'dark' ? 'system' : 'light'
+    setTheme(next)
+  }
+
+  const ThemeIcon = theme === 'light' ? Sun : theme === 'dark' ? Moon : Monitor
+  const themeLabel = theme === 'light' ? 'Light' : theme === 'dark' ? 'Dark' : 'System'
+
+  const isActive = (to: string) => {
+    if (to === '/') return location.pathname === '/'
+    return location.pathname.startsWith(to)
+  }
+
+  return (
+    <aside className="w-[200px] bg-bg-surface border-r border-border h-screen flex flex-col">
+      {/* Logo area */}
+      <div className="p-4 mb-4">
+        <div className="flex items-center gap-3">
+          <div className="bg-accent w-8 h-8 rounded-full flex items-center justify-center">
+            <span className="text-white text-sm font-bold">B</span>
+          </div>
+          <span className="text-text-primary text-sm font-semibold">BSNexus</span>
         </div>
       </div>
+
+      {/* Navigation */}
+      <nav className="flex flex-col gap-1 px-3">
+        {navItems.map((item) => {
+          const Icon = item.icon
+          const active = isActive(item.to)
+
+          return (
+            <NavLink
+              key={item.to}
+              to={item.to}
+              end={item.to === '/'}
+              className={`flex items-center gap-3 px-3 py-2 text-sm font-medium transition-colors rounded-md ${
+                active
+                  ? 'bg-accent text-white'
+                  : 'text-text-secondary hover:bg-bg-hover'
+              }`}
+            >
+              <Icon size={18} />
+              {item.label}
+            </NavLink>
+          )
+        })}
+      </nav>
+
+      {/* Theme toggle + Settings (pushed to bottom) */}
+      <div className="mt-auto px-3 pb-4 flex flex-col gap-1">
+        <button
+          type="button"
+          onClick={cycleTheme}
+          className="flex items-center gap-3 px-3 py-2 text-sm text-text-secondary hover:bg-bg-hover rounded-md cursor-pointer transition-colors w-full"
+        >
+          <ThemeIcon size={18} />
+          {themeLabel}
+        </button>
+        <button
+          type="button"
+          onClick={() => setSettingsOpen(true)}
+          className="flex items-center gap-3 px-3 py-2 text-sm text-text-secondary hover:bg-bg-hover rounded-md cursor-pointer transition-colors w-full"
+        >
+          <Settings size={18} />
+          Settings
+        </button>
+      </div>
+
+      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </aside>
   )
 }

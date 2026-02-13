@@ -1,8 +1,14 @@
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { workersApi } from '../api/workers'
 import WorkerList from '../components/workers/WorkerList'
+import RegistrationTokenModal from '../components/workers/RegistrationTokenModal'
+import { StatCard, Button } from '../components/common'
+import Header from '../components/layout/Header'
 
 export default function WorkersPage() {
+  const [tokenModalOpen, setTokenModalOpen] = useState(false)
+
   const { data: workers, isLoading, error } = useQuery({
     queryKey: ['workers'],
     queryFn: workersApi.list,
@@ -15,42 +21,52 @@ export default function WorkersPage() {
   const offline = workerList.filter((w) => w.status === 'offline').length
 
   if (isLoading) {
-    return <div className="text-gray-500">Loading workers...</div>
+    return (
+      <>
+        <Header title="Workers" />
+        <div className="p-8 text-text-secondary">Loading workers...</div>
+      </>
+    )
   }
 
   if (error) {
     return (
-      <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
-        Failed to load workers. Please try again.
-      </div>
+      <>
+        <Header title="Workers" />
+        <div className="p-8">
+          <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+            Failed to load workers. Please try again.
+          </div>
+        </div>
+      </>
     )
   }
 
   return (
-    <div>
-      <h2 className="text-2xl font-bold text-gray-900 mb-4">Workers</h2>
+    <>
+      <Header
+        title="Workers"
+        action={
+          <Button size="sm" onClick={() => setTokenModalOpen(true)}>
+            Registration Token
+          </Button>
+        }
+      />
+      <div className="p-8">
+        {/* Summary stats */}
+        <div className="grid grid-cols-4 gap-4 mb-6">
+          <StatCard label="Total Workers" value={workerList.length} />
+          <StatCard label="Online" value={idle} badge={{ color: 'idle', label: 'Idle' }} />
+          <StatCard label="Running Tasks" value={busy} badge={{ color: 'busy', label: 'Busy' }} />
+          <StatCard label="Offline" value={offline} badge={{ color: 'offline', label: 'Offline' }} />
+        </div>
 
-      {/* Summary stats */}
-      <div className="grid grid-cols-4 gap-4 mb-6">
-        <div className="rounded-lg border border-gray-200 bg-white p-4 text-center">
-          <p className="text-2xl font-bold text-gray-900">{workerList.length}</p>
-          <p className="text-sm text-gray-500">Total</p>
-        </div>
-        <div className="rounded-lg border border-green-200 bg-green-50 p-4 text-center">
-          <p className="text-2xl font-bold text-green-700">{idle}</p>
-          <p className="text-sm text-green-600">Idle</p>
-        </div>
-        <div className="rounded-lg border border-orange-200 bg-orange-50 p-4 text-center">
-          <p className="text-2xl font-bold text-orange-700">{busy}</p>
-          <p className="text-sm text-orange-600">Busy</p>
-        </div>
-        <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 text-center">
-          <p className="text-2xl font-bold text-gray-500">{offline}</p>
-          <p className="text-sm text-gray-400">Offline</p>
-        </div>
+        <WorkerList workers={workerList} />
       </div>
 
-      <WorkerList workers={workerList} />
-    </div>
+      {tokenModalOpen && (
+        <RegistrationTokenModal open={tokenModalOpen} onClose={() => setTokenModalOpen(false)} />
+      )}
+    </>
   )
 }

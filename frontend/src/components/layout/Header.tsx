@@ -1,16 +1,15 @@
-import { Link } from 'react-router-dom'
+import type { ReactNode } from 'react'
 
-export default function Header() {
+interface HeaderProps {
+  title: string
+  action?: ReactNode
+}
+
+export default function Header({ title, action }: HeaderProps) {
   return (
-    <header className="bg-white border-b border-gray-200 px-6 py-3">
-      <div className="flex items-center justify-between">
-        <Link to="/" className="text-xl font-bold text-gray-900 hover:text-blue-600 transition-colors">
-          BSNexus
-        </Link>
-        <nav className="flex items-center gap-4 text-sm text-gray-500">
-          <span>Project Manager</span>
-        </nav>
-      </div>
+    <header className="bg-bg-primary border-b border-border px-8 py-4 flex items-center justify-between">
+      <h1 className="text-xl font-semibold text-text-primary">{title}</h1>
+      {action && <div className="flex items-center gap-3">{action}</div>}
     </header>
   )
 }

@@ -1,18 +1,5 @@
 import type { Task } from '../../types/task'
-
-const priorityColors: Record<string, string> = {
-  low: 'bg-gray-100 text-gray-700',
-  medium: 'bg-blue-100 text-blue-700',
-  high: 'bg-orange-100 text-orange-700',
-  critical: 'bg-red-100 text-red-700',
-}
-
-const priorityDots: Record<string, string> = {
-  low: 'bg-gray-400',
-  medium: 'bg-blue-400',
-  high: 'bg-orange-400',
-  critical: 'bg-red-400',
-}
+import { Badge } from '../common'
 
 interface Props {
   task: Task
@@ -23,22 +10,16 @@ export default function TaskCard({ task, onClick }: Props) {
   return (
     <div
       onClick={onClick}
-      className="cursor-pointer rounded-lg border border-gray-200 bg-white p-3 shadow-sm hover:shadow-md transition-all duration-200"
+      className="cursor-pointer rounded-lg border border-border bg-bg-card p-3 hover:bg-bg-hover transition-colors"
     >
       <div className="flex items-start justify-between gap-2 mb-2">
-        <h4 className="text-sm font-medium text-gray-900 leading-snug">{task.title}</h4>
-        <span
-          className={`inline-block w-2 h-2 rounded-full flex-shrink-0 mt-1.5 ${priorityDots[task.priority]}`}
-          title={task.priority}
-        />
+        <h4 className="text-sm font-medium text-text-primary leading-snug">{task.title}</h4>
       </div>
       <div className="flex items-center gap-2 flex-wrap">
-        <span className={`inline-block rounded px-1.5 py-0.5 text-xs font-medium ${priorityColors[task.priority]}`}>
-          {task.priority}
-        </span>
+        <Badge color={task.priority} label={task.priority} size="sm" />
         {task.depends_on.length > 0 && (
           <span
-            className="inline-flex items-center gap-0.5 text-xs text-gray-400"
+            className="inline-flex items-center gap-0.5 text-xs text-text-tertiary"
             title={`Depends on ${task.depends_on.length} task(s)`}
           >
             <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -53,7 +34,7 @@ export default function TaskCard({ task, onClick }: Props) {
           </span>
         )}
         {task.worker_id && (
-          <span className="inline-flex items-center gap-0.5 text-xs text-gray-400" title="Worker assigned">
+          <span className="inline-flex items-center gap-0.5 text-xs text-accent-text" title="Worker assigned">
             <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path
                 strokeLinecap="round"

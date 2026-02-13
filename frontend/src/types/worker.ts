@@ -23,3 +23,18 @@ export interface WorkerHeartbeatResponse {
   status: WorkerStatus
   pending_tasks: number
 }
+
+export interface RegistrationToken {
+  id: string
+  token: string
+  name: string
+  created_at: string
+  expires_at: string | null
+  revoked: boolean
+  server_url?: string
+  redis_url?: string
+}
+
+export interface RegistrationTokenCreate {
+  name?: string
+}

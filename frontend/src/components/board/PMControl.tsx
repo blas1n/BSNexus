@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { pmApi } from '../../api/pm'
+import { Button, Badge } from '../common'
 
 interface Props {
   projectId: string
@@ -54,48 +55,55 @@ export default function PMControl({ projectId }: Props) {
   const isRunning = status?.running ?? false
 
   return (
-    <div className="rounded-lg border border-gray-200 bg-white p-4">
+    <div className="rounded-lg border border-border bg-bg-surface p-4">
       <div className="flex items-center justify-between mb-3">
-        <h3 className="text-sm font-semibold text-gray-700">PM Control</h3>
-        <div className="flex items-center gap-1.5">
-          <span className={`inline-block w-2 h-2 rounded-full ${isRunning ? 'bg-green-500 animate-pulse' : 'bg-gray-400'}`} />
-          <span className="text-xs text-gray-500">{isRunning ? 'Running' : 'Paused'}</span>
-        </div>
+        <h3 className="text-sm font-semibold text-text-primary">PM Control</h3>
+        {isRunning ? (
+          <Badge color="in_progress" label="Running" />
+        ) : (
+          <Badge color="waiting" label="Paused" />
+        )}
       </div>
 
       <div className="flex gap-2 mb-3">
         {isRunning ? (
-          <button
+          <Button
+            variant="secondary"
             onClick={() => pauseMutation.mutate()}
             disabled={pauseMutation.isPending}
-            className="flex-1 rounded-md bg-yellow-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-yellow-600 disabled:opacity-50"
+            size="sm"
+            className="flex-1"
           >
             Pause
-          </button>
+          </Button>
         ) : (
-          <button
+          <Button
+            variant="secondary"
             onClick={() => startMutation.mutate()}
             disabled={startMutation.isPending}
-            className="flex-1 rounded-md bg-green-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50"
+            size="sm"
+            className="flex-1"
           >
             Start
-          </button>
+          </Button>
         )}
-        <button
+        <Button
+          variant="primary"
           onClick={() => queueMutation.mutate()}
           disabled={queueMutation.isPending}
-          className="flex-1 rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+          size="sm"
+          className="flex-1"
         >
           Queue Next
-        </button>
+        </Button>
       </div>
 
       {logs.length > 0 && (
-        <div className="border-t border-gray-100 pt-2">
-          <p className="text-xs font-medium text-gray-500 mb-1">Recent activity</p>
-          <div className="space-y-0.5">
+        <div className="border-t border-border-subtle pt-2">
+          <p className="text-xs font-medium text-text-secondary mb-1">Recent activity</p>
+          <div className="bg-bg-elevated rounded-md p-3 space-y-0.5">
             {logs.map((log, i) => (
-              <p key={i} className="text-xs text-gray-400">{log}</p>
+              <p key={i} className="text-xs text-text-secondary">{log}</p>
             ))}
           </div>
         </div>

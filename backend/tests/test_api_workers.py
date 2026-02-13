@@ -6,8 +6,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.src import models
 from backend.src.main import app
+from backend.src.storage.database import get_db
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -39,10 +42,15 @@ async def mock_redis() -> AsyncMock:
 
 
 @pytest_asyncio.fixture
-async def api_client(mock_redis: AsyncMock) -> AsyncGenerator[AsyncClient]:
-    """Create an HTTP test client with a mocked Redis on app.state."""
+async def api_client(mock_redis: AsyncMock, db_session: AsyncSession) -> AsyncGenerator[AsyncClient]:
+    """Create an HTTP test client with mocked Redis and real DB session."""
     app.state.redis = mock_redis
     app.state.stream_manager = AsyncMock()
+
+    async def override_get_db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = override_get_db
 
     async with AsyncClient(
         transport=ASGITransport(app=app),
@@ -50,11 +58,29 @@ async def api_client(mock_redis: AsyncMock) -> AsyncGenerator[AsyncClient]:
     ) as client:
         yield client
 
+    app.dependency_overrides.clear()
+
+
+@pytest_asyncio.fixture
+async def valid_registration_token(db_session: AsyncSession) -> str:
+    """Create a valid registration token in the DB and return the token string."""
+    token_str = "glrt-test-valid-token-1234567890"
+    token = models.RegistrationToken(
+        id=uuid.uuid4(),
+        token=token_str,
+        name="test-token",
+    )
+    db_session.add(token)
+    await db_session.commit()
+    return token_str
+
 
 # ── POST /api/workers/register ───────────────────────────────────────────
 
 
-async def test_register_worker_success(api_client: AsyncClient, mock_redis: AsyncMock) -> None:
+async def test_register_worker_success(
+    api_client: AsyncClient, mock_redis: AsyncMock, valid_registration_token: str
+) -> None:
     """POST /api/workers/register should return worker_id, token, and stream info."""
     response = await api_client.post(
         "/api/v1/workers/register",
@@ -62,6 +88,7 @@ async def test_register_worker_success(api_client: AsyncClient, mock_redis: Asyn
             "platform": "linux",
             "capabilities": {"python": True},
             "executor_type": "claude-code",
+            "registration_token": valid_registration_token,
         },
     )
 
@@ -83,11 +110,16 @@ async def test_register_worker_success(api_client: AsyncClient, mock_redis: Asyn
     mock_redis.set.assert_called_once()
 
 
-async def test_register_worker_auto_name(api_client: AsyncClient, mock_redis: AsyncMock) -> None:
+async def test_register_worker_auto_name(
+    api_client: AsyncClient, mock_redis: AsyncMock, valid_registration_token: str
+) -> None:
     """When name is not provided, a default name should be generated."""
     response = await api_client.post(
         "/api/v1/workers/register",
-        json={"platform": "darwin"},
+        json={
+            "platform": "darwin",
+            "registration_token": valid_registration_token,
+        },
     )
 
     assert response.status_code == 200
@@ -95,6 +127,56 @@ async def test_register_worker_auto_name(api_client: AsyncClient, mock_redis: As
     # Name should start with "worker-" followed by first 8 chars of uuid
     worker_id = data["worker_id"]
     assert worker_id  # should be a valid UUID string
+
+
+async def test_register_worker_invalid_token(api_client: AsyncClient) -> None:
+    """POST /api/workers/register with invalid token should return 401."""
+    response = await api_client.post(
+        "/api/v1/workers/register",
+        json={
+            "platform": "linux",
+            "registration_token": "glrt-invalid-token",
+        },
+    )
+
+    assert response.status_code == 401
+    assert "Invalid registration token" in response.json()["detail"]
+
+
+async def test_register_worker_revoked_token(api_client: AsyncClient, db_session: AsyncSession) -> None:
+    """POST /api/workers/register with revoked token should return 401."""
+    token_str = "glrt-revoked-token-1234567890"
+    token = models.RegistrationToken(
+        id=uuid.uuid4(),
+        token=token_str,
+        name="revoked-token",
+        revoked=True,
+    )
+    db_session.add(token)
+    await db_session.commit()
+
+    response = await api_client.post(
+        "/api/v1/workers/register",
+        json={
+            "platform": "linux",
+            "registration_token": token_str,
+        },
+    )
+
+    assert response.status_code == 401
+    assert "revoked" in response.json()["detail"]
+
+
+async def test_register_worker_missing_token(api_client: AsyncClient) -> None:
+    """POST /api/workers/register without registration_token should return 422."""
+    response = await api_client.post(
+        "/api/v1/workers/register",
+        json={
+            "platform": "linux",
+        },
+    )
+
+    assert response.status_code == 422
 
 
 # ── POST /api/workers/{id}/heartbeat ─────────────────────────────────────
@@ -177,7 +259,7 @@ async def test_heartbeat_token_mismatch(api_client: AsyncClient, mock_redis: Asy
 
 
 async def test_list_workers(api_client: AsyncClient, mock_redis: AsyncMock) -> None:
-    """GET /api/workers/ should return list of active workers."""
+    """GET /api/v1/workers should return list of active workers."""
     mock_redis.scan_iter = MagicMock(
         return_value=_async_iter(["worker:w-1", "worker:w-2"])
     )
@@ -207,7 +289,7 @@ async def test_list_workers(api_client: AsyncClient, mock_redis: AsyncMock) -> N
 
     mock_redis.hgetall = AsyncMock(side_effect=hgetall_side_effect)
 
-    response = await api_client.get("/api/v1/workers/")
+    response = await api_client.get("/api/v1/workers")
 
     assert response.status_code == 200
     data = response.json()
@@ -217,10 +299,10 @@ async def test_list_workers(api_client: AsyncClient, mock_redis: AsyncMock) -> N
 
 
 async def test_list_workers_empty(api_client: AsyncClient, mock_redis: AsyncMock) -> None:
-    """GET /api/workers/ with no registered workers returns empty list."""
+    """GET /api/v1/workers with no registered workers returns empty list."""
     mock_redis.scan_iter = MagicMock(return_value=_async_iter([]))
 
-    response = await api_client.get("/api/v1/workers/")
+    response = await api_client.get("/api/v1/workers")
 
     assert response.status_code == 200
     assert response.json() == []

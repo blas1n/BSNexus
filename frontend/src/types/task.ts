@@ -1,4 +1,4 @@
-export type TaskStatus = 'waiting' | 'ready' | 'queued' | 'in_progress' | 'review' | 'done' | 'rejected' | 'blocked'
+export type TaskStatus = 'waiting' | 'ready' | 'queued' | 'in_progress' | 'review' | 'done' | 'rejected'
 export type TaskPriority = 'low' | 'medium' | 'high' | 'critical'
 
 export interface Task {

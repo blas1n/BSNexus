@@ -44,6 +44,8 @@ export function useWebSocket({
     reconnectRef.current = reconnect
   }, [reconnect])
 
+  const connectRef = useRef<() => void>(() => {})
+
   const connect = useCallback(() => {
     // Don't open a new connection if one is already open or connecting
     if (
@@ -76,7 +78,7 @@ export function useWebSocket({
           maxReconnectInterval,
         )
         retriesRef.current += 1
-        reconnectTimerRef.current = setTimeout(() => connect(), delay)
+        reconnectTimerRef.current = setTimeout(() => connectRef.current(), delay)
       }
     }
 
@@ -86,6 +88,8 @@ export function useWebSocket({
 
     wsRef.current = ws
   }, [url, reconnectInterval, maxReconnectInterval])
+
+  useEffect(() => { connectRef.current = connect }, [connect])
 
   const send = useCallback((data: unknown) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {

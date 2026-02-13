@@ -1,15 +1,5 @@
 import { useBoardStore } from '../../stores/boardStore'
-
-const statusColors: Record<string, string> = {
-  waiting: 'bg-gray-400',
-  ready: 'bg-blue-400',
-  queued: 'bg-yellow-400',
-  in_progress: 'bg-orange-400',
-  review: 'bg-purple-400',
-  done: 'bg-green-400',
-  rejected: 'bg-red-400',
-  blocked: 'bg-red-300',
-}
+import { Badge } from '../common'
 
 interface Props {
   projectName?: string
@@ -21,25 +11,25 @@ export default function BoardStats({ projectName }: Props) {
   const activeWorkers = Object.values(workers).reduce((sum, count) => sum + count, 0)
 
   return (
-    <div className="bg-white rounded-lg border border-gray-200 p-4 mb-4">
+    <div className="bg-bg-card rounded-lg border border-border p-4 mb-4">
       <div className="flex items-center justify-between flex-wrap gap-4">
         {projectName && (
-          <h3 className="text-lg font-semibold text-gray-900">{projectName}</h3>
+          <h3 className="text-lg font-semibold text-text-primary">{projectName}</h3>
         )}
 
         <div className="flex items-center gap-6">
-          <div className="text-sm text-gray-600">
+          <div className="text-sm text-text-secondary">
             <span className="font-medium">{total}</span> tasks
           </div>
 
           <div className="flex items-center gap-2">
-            <div className="w-32 h-2 bg-gray-200 rounded-full overflow-hidden">
+            <div className="w-32 h-2 bg-bg-elevated rounded-full overflow-hidden">
               <div
-                className="h-full bg-green-500 rounded-full transition-all duration-500"
-                style={{ width: `${completionRate}%` }}
+                className="h-full rounded-full transition-all duration-500"
+                style={{ width: `${completionRate}%`, backgroundColor: 'var(--status-done)' }}
               />
             </div>
-            <span className="text-sm text-gray-600">
+            <span className="text-sm text-text-secondary">
               {done}/{total} ({Math.round(completionRate)}%)
             </span>
           </div>
@@ -47,15 +37,12 @@ export default function BoardStats({ projectName }: Props) {
           <div className="flex items-center gap-2">
             {Object.entries(stats).map(([status, count]) => (
               <div key={status} className="flex items-center gap-1" title={status}>
-                <span
-                  className={`inline-block w-2.5 h-2.5 rounded-full ${statusColors[status] || 'bg-gray-300'}`}
-                />
-                <span className="text-xs text-gray-500">{count}</span>
+                <Badge color={status} label={String(count)} size="sm" />
               </div>
             ))}
           </div>
 
-          <div className="text-sm text-gray-600">
+          <div className="text-sm text-text-secondary">
             <span className="font-medium">{activeWorkers}</span> workers
           </div>
         </div>

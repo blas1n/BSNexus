@@ -220,6 +220,7 @@ class DesignSession(Base):
     project_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("projects.id", ondelete="SET NULL"), nullable=True
     )
+    name: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
     status: Mapped[DesignSessionStatus] = mapped_column(
         Enum(DesignSessionStatus), nullable=False, default=DesignSessionStatus.active
     )
@@ -248,3 +249,26 @@ class DesignMessage(Base):
 
     # Relationships
     session: Mapped["DesignSession"] = relationship("DesignSession", back_populates="messages")
+
+
+class Setting(Base):
+    __tablename__ = "settings"
+
+    key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class RegistrationToken(Base):
+    __tablename__ = "registration_tokens"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    token: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked: Mapped[bool] = mapped_column(default=False)

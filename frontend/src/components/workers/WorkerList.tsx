@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { Worker, WorkerStatus } from '../../types/worker'
 import WorkerCard from './WorkerCard'
+import { Button } from '../common'
 
 type FilterStatus = WorkerStatus | 'all'
 
@@ -32,23 +33,23 @@ export default function WorkerList({ workers }: Props) {
       {/* Filter tabs */}
       <div className="flex gap-2 mb-4">
         {filters.map((f) => (
-          <button
+          <Button
             key={f.value}
             onClick={() => setFilter(f.value)}
-            className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
-              filter === f.value
-                ? 'bg-blue-100 text-blue-700'
-                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-            }`}
+            variant={filter === f.value ? 'primary' : 'secondary'}
+            size="sm"
           >
-            {f.label} ({counts[f.value]})
-          </button>
+            {f.label}{' '}
+            <span className={filter === f.value ? 'opacity-70' : 'text-text-tertiary'}>
+              ({counts[f.value]})
+            </span>
+          </Button>
         ))}
       </div>
 
       {/* Worker grid */}
       {filtered.length === 0 ? (
-        <div className="rounded-lg border border-dashed border-gray-200 p-8 text-center text-gray-400">
+        <div className="rounded-lg border border-dashed border-border p-8 text-center text-text-tertiary">
           No {filter === 'all' ? '' : filter} workers found
         </div>
       ) : (
