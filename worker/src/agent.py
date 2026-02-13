@@ -24,12 +24,13 @@ class WorkerAgent:
 
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                f"{self.config.server_url}/api/workers/register",
+                f"{self.config.server_url}/api/v1/workers/register",
                 json={
                     "name": name,
                     "platform": platform.system().lower(),
                     "capabilities": {cap: True for cap in capabilities},
                     "executor_type": self.config.executor_type,
+                    "registration_token": self.config.registration_token or "",
                 },
             )
             response.raise_for_status()
@@ -49,7 +50,7 @@ class WorkerAgent:
             try:
                 async with httpx.AsyncClient() as client:
                     response = await client.post(
-                        f"{self.config.server_url}/api/workers/{self.worker_id}/heartbeat",
+                        f"{self.config.server_url}/api/v1/workers/{self.worker_id}/heartbeat",
                         headers={"Authorization": f"Bearer {self.token}"},
                     )
                     if response.status_code == 404:
@@ -75,7 +76,7 @@ class WorkerAgent:
             try:
                 async with httpx.AsyncClient() as client:
                     await client.delete(
-                        f"{self.config.server_url}/api/workers/{self.worker_id}",
+                        f"{self.config.server_url}/api/v1/workers/{self.worker_id}",
                     )
             except Exception:
                 pass

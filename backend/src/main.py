@@ -4,7 +4,7 @@ from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
-from backend.src.api import architect, board, dashboard, pm, projects, settings, tasks, workers
+from backend.src.api import architect, board, dashboard, pm, projects, registration_tokens, settings, tasks, workers
 from backend.src.api.architect import architect_websocket
 from backend.src.api.board import board_websocket_handler
 from backend.src.queue.background import start_background_consumer
@@ -89,6 +89,7 @@ app.include_router(architect.router)
 app.include_router(board.router)
 app.include_router(dashboard.router)
 app.include_router(settings.router)
+app.include_router(registration_tokens.router)
 
 
 @app.websocket("/ws/architect/{session_id}")

@@ -10,7 +10,8 @@ from worker.src.consumer import TaskConsumer
 from worker.src.executor import create_executor
 
 
-async def main(config: WorkerConfig) -> None:
+async def run(config: WorkerConfig) -> None:
+    """Register the worker and start the main event loop."""
     agent = WorkerAgent(config)
     await agent.register()
 
@@ -46,16 +47,46 @@ async def main(config: WorkerConfig) -> None:
 
 def cli_main() -> None:
     parser = argparse.ArgumentParser(description="BSNexus Worker")
-    parser.add_argument("--server", default="http://localhost:8000")
-    parser.add_argument("--duration", type=int, default=None)
+    subparsers = parser.add_subparsers(dest="command")
+
+    # --- register subcommand ---
+    reg_parser = subparsers.add_parser("register", help="Register this machine as a worker and start")
+    reg_parser.add_argument("--url", required=True, help="BSNexus server URL (e.g. http://localhost:8000)")
+    reg_parser.add_argument("--token", required=True, help="Registration token from the admin UI")
+    reg_parser.add_argument("--redis-url", default=None, help="Redis URL (default: redis://localhost:6379)")
+    reg_parser.add_argument("--executor", default="claude-code", help="Executor type (default: claude-code)")
+    reg_parser.add_argument("--name", default=None, help="Worker display name (auto-generated if omitted)")
+    reg_parser.add_argument("--duration", type=int, default=None, help="Max run time in seconds (default: infinite)")
+
+    # --- run subcommand (legacy / re-run) ---
+    run_parser = subparsers.add_parser("run", help="Start worker with environment config")
+    run_parser.add_argument("--server", default="http://localhost:8000", help="BSNexus server URL")
+    run_parser.add_argument("--duration", type=int, default=None, help="Max run time in seconds")
+
     args = parser.parse_args()
 
-    config = WorkerConfig(
-        server_url=args.server,
-        duration=args.duration,
-    )
+    if args.command == "register":
+        kwargs: dict = {
+            "server_url": args.url,
+            "registration_token": args.token,
+            "executor_type": args.executor,
+            "worker_name": args.name,
+            "duration": args.duration,
+        }
+        if args.redis_url:
+            kwargs["redis_url"] = args.redis_url
+        config = WorkerConfig(**kwargs)
+        asyncio.run(run(config))
 
-    asyncio.run(main(config))
+    elif args.command == "run":
+        config = WorkerConfig(
+            server_url=args.server,
+            duration=args.duration,
+        )
+        asyncio.run(run(config))
+
+    else:
+        parser.print_help()
 
 
 if __name__ == "__main__":

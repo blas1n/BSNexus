@@ -1,27 +1,41 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { Modal, Button } from '../common'
+import { registrationTokensApi } from '../../api/workers'
 
 interface RegistrationTokenModalProps {
   open: boolean
   onClose: () => void
 }
 
-function generateToken(): string {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
-  const random = Array.from({ length: 20 }, () => chars[Math.floor(Math.random() * chars.length)]).join('')
-  return `glrt-${random}`
-}
-
 export default function RegistrationTokenModal({ open, onClose }: RegistrationTokenModalProps) {
-  const [token] = useState(generateToken)
+  const [token, setToken] = useState<string | null>(null)
+  const [serverUrl, setServerUrl] = useState<string | null>(null)
+  const [redisUrl, setRedisUrl] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
 
-  const command = `bsnexus-worker register \\
-  --url http://localhost:8000 \\
-  --token ${token} \\
-  --executor claude-code`
+  useEffect(() => {
+    if (!open) return
+    setLoading(true)
+    setError(null)
+    registrationTokensApi
+      .create()
+      .then((res) => {
+        setToken(res.token)
+        setServerUrl(res.server_url ?? null)
+        setRedisUrl(res.redis_url ?? null)
+      })
+      .catch(() => setError('Failed to create registration token'))
+      .finally(() => setLoading(false))
+  }, [open])
+
+  const command = token
+    ? `bsnexus-worker register \\\n  --url ${serverUrl ?? 'http://<SERVER_HOST>:8000'} \\\n  --token ${token} \\\n  --redis-url ${redisUrl ?? 'redis://localhost:6379'} \\\n  --executor claude-code`
+    : ''
 
   const handleCopy = useCallback(async () => {
+    if (!command) return
     await navigator.clipboard.writeText(command)
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
@@ -39,27 +53,41 @@ export default function RegistrationTokenModal({ open, onClose }: RegistrationTo
           Run this command on the worker machine to register it with this server.
         </p>
 
-        {/* Token field */}
-        <div className="space-y-1.5">
-          <label className="text-text-secondary text-sm">Token</label>
-          <input
-            type="text"
-            value={token}
-            readOnly
-            className="w-full bg-bg-input border border-border rounded-md px-3 py-2 text-text-primary text-sm focus:outline-none"
-          />
-        </div>
+        {loading && (
+          <p className="text-text-secondary text-sm">Generating token...</p>
+        )}
 
-        {/* Command field */}
-        <div className="space-y-1.5">
-          <label className="text-text-secondary text-sm">Command</label>
-          <div className="bg-bg-elevated rounded-md p-4 font-mono text-sm text-accent-text whitespace-pre-wrap break-all">
-            {command}
+        {error && (
+          <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+            {error}
           </div>
-          <Button variant="secondary" size="sm" onClick={handleCopy}>
-            {copied ? 'Copied!' : 'Copy'}
-          </Button>
-        </div>
+        )}
+
+        {token && (
+          <>
+            {/* Token field */}
+            <div className="space-y-1.5">
+              <label className="text-text-secondary text-sm">Token</label>
+              <input
+                type="text"
+                value={token}
+                readOnly
+                className="w-full bg-bg-input border border-border rounded-md px-3 py-2 text-text-primary text-sm focus:outline-none"
+              />
+            </div>
+
+            {/* Command field */}
+            <div className="space-y-1.5">
+              <label className="text-text-secondary text-sm">Command</label>
+              <div className="bg-bg-elevated rounded-md p-4 font-mono text-sm text-accent-text whitespace-pre-wrap break-all">
+                {command}
+              </div>
+              <Button variant="secondary" size="sm" onClick={handleCopy}>
+                {copied ? 'Copied!' : 'Copy'}
+              </Button>
+            </div>
+          </>
+        )}
       </div>
     </Modal>
   )

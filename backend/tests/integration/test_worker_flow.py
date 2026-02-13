@@ -1,11 +1,15 @@
 """Integration tests for worker registration and heartbeat flow."""
 from __future__ import annotations
 
+import uuid
 from unittest.mock import AsyncMock, MagicMock
 
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.src import models
 from backend.src.main import app
+from backend.src.storage.database import get_db
 
 
 # -- Helpers -------------------------------------------------------------------
@@ -22,8 +26,18 @@ def _async_iter(items: list):
 # -- Tests ---------------------------------------------------------------------
 
 
-async def test_worker_registration_and_list():
+async def test_worker_registration_and_list(db_session: AsyncSession):
     """Register a worker and verify it appears in the worker list."""
+    # Create a valid registration token in DB
+    token_str = "glrt-integration-test-reg-token"
+    reg_token = models.RegistrationToken(
+        id=uuid.uuid4(),
+        token=token_str,
+        name="integration-test-token",
+    )
+    db_session.add(reg_token)
+    await db_session.commit()
+
     mock_redis = AsyncMock()
     mock_redis.hset = AsyncMock()
     mock_redis.hgetall = AsyncMock(return_value={})
@@ -38,6 +52,11 @@ async def test_worker_registration_and_list():
     app.state.redis = mock_redis
     app.state.stream_manager = AsyncMock()
 
+    async def override_get_db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = override_get_db
+
     async with AsyncClient(
         transport=ASGITransport(app=app),
         base_url="http://test",
@@ -49,6 +68,7 @@ async def test_worker_registration_and_list():
                 "platform": "linux",
                 "capabilities": {"python": True},
                 "executor_type": "claude-code",
+                "registration_token": token_str,
             },
         )
 
@@ -80,7 +100,7 @@ async def test_worker_registration_and_list():
             "current_task_id": "",
         })
 
-        list_resp = await api_client.get("/api/v1/workers/")
+        list_resp = await api_client.get("/api/v1/workers")
         assert list_resp.status_code == 200
         workers = list_resp.json()
         assert len(workers) == 1
@@ -88,9 +108,21 @@ async def test_worker_registration_and_list():
         assert workers[0]["platform"] == "linux"
         assert workers[0]["status"] == "idle"
 
+    app.dependency_overrides.clear()
 
-async def test_worker_heartbeat():
+
+async def test_worker_heartbeat(db_session: AsyncSession):
     """Register a worker, send heartbeat, verify response."""
+    # Create a valid registration token in DB
+    token_str = "glrt-integration-heartbeat-token"
+    reg_token = models.RegistrationToken(
+        id=uuid.uuid4(),
+        token=token_str,
+        name="heartbeat-test-token",
+    )
+    db_session.add(reg_token)
+    await db_session.commit()
+
     mock_redis = AsyncMock()
     mock_redis.hset = AsyncMock()
     mock_redis.hgetall = AsyncMock(return_value={})
@@ -105,6 +137,11 @@ async def test_worker_heartbeat():
     app.state.redis = mock_redis
     app.state.stream_manager = AsyncMock()
 
+    async def override_get_db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = override_get_db
+
     async with AsyncClient(
         transport=ASGITransport(app=app),
         base_url="http://test",
@@ -116,6 +153,7 @@ async def test_worker_heartbeat():
                 "platform": "darwin",
                 "capabilities": {"node": True},
                 "executor_type": "claude-code",
+                "registration_token": token_str,
             },
         )
         assert register_resp.status_code == 200
@@ -147,3 +185,5 @@ async def test_worker_heartbeat():
         hb_data = heartbeat_resp.json()
         assert hb_data["status"] == "idle"
         assert hb_data["pending_tasks"] == 0
+
+    app.dependency_overrides.clear()

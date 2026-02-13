@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from backend.src import models
 from backend.src.queue.streams import RedisStreamManager
 from backend.src.schemas import WorkerRegister
+from backend.src.storage.database import get_db
 from backend.src.utils.worker_registry import WorkerRegistry
 from fastapi import APIRouter, Depends, HTTPException, Request
 
@@ -42,15 +48,33 @@ async def verify_worker_token(request: Request) -> str:
 async def register_worker(
     body: WorkerRegister,
     request: Request,
+    db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Register a new worker and return connection metadata."""
+    """Register a new worker and return connection metadata.
+
+    Requires a valid registration token created via the admin UI.
+    """
+    # Validate registration token
+    result = await db.execute(
+        select(models.RegistrationToken).where(models.RegistrationToken.token == body.registration_token)
+    )
+    reg_token = result.scalar_one_or_none()
+
+    if not reg_token:
+        raise HTTPException(status_code=401, detail="Invalid registration token")
+    if reg_token.revoked:
+        raise HTTPException(status_code=401, detail="Registration token has been revoked")
+    if reg_token.expires_at and reg_token.expires_at < datetime.now(timezone.utc):
+        raise HTTPException(status_code=401, detail="Registration token has expired")
+
+    # Proceed with Redis-based worker registration
     registry = _get_registry(request)
 
     worker_id = str(uuid.uuid4())
     name = body.name or f"worker-{worker_id[:8]}"
     capabilities = list(body.capabilities.keys()) if body.capabilities else []
 
-    result = await registry.register(
+    reg_result = await registry.register(
         worker_id=worker_id,
         name=name,
         platform=body.platform,
@@ -59,8 +83,8 @@ async def register_worker(
     )
 
     return {
-        "worker_id": result["worker_id"],
-        "token": result["token"],
+        "worker_id": reg_result["worker_id"],
+        "token": reg_result["token"],
         "heartbeat_interval": 30,
         "streams": {
             "tasks_queue": RedisStreamManager.TASKS_QUEUE,

@@ -175,6 +175,7 @@ class WorkerRegister(BaseModel):
     platform: str
     capabilities: Optional[dict] = None
     executor_type: str = "claude-code"
+    registration_token: str
 
 
 class WorkerResponse(BaseModel):
@@ -327,3 +328,21 @@ class GlobalSettingsUpdate(BaseModel):
     llm_api_key: Optional[str] = None
     llm_model: Optional[str] = None
     llm_base_url: Optional[str] = None
+
+
+# ── Registration Token Schemas ──────────────────────────────────────
+
+
+class RegistrationTokenCreate(BaseModel):
+    name: Optional[str] = None
+
+
+class RegistrationTokenResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    token: str
+    name: str
+    created_at: datetime
+    expires_at: Optional[datetime] = None
+    revoked: bool
