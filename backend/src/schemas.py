@@ -249,8 +249,8 @@ class LLMConfigInput(BaseModel):
 
 
 class CreateSessionRequest(BaseModel):
-    llm_config: LLMConfigInput
     name: Optional[str] = None
+    worker_id: Optional[str] = None
 
 
 class MessageRequest(BaseModel):

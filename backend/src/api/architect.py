@@ -7,6 +7,7 @@ import uuid
 from typing import Any
 
 from backend.src import models, schemas
+from backend.src.api.settings import get_raw_llm_config
 from backend.src.core.llm_client import LLMClient, LLMConfig, LLMError
 from backend.src.prompts.loader import get_prompt
 from backend.src.repositories.design_session_repository import DesignSessionRepository
@@ -94,14 +95,17 @@ async def create_session(
     body: schemas.CreateSessionRequest,
     db: AsyncSession = Depends(get_db),
 ) -> schemas.DesignSessionResponse:
-    """Create a new design session with an initial system message."""
-    llm_config_dict: dict[str, Any] = {
-        "api_key": body.llm_config.api_key,
-    }
-    if body.llm_config.model:
-        llm_config_dict["model"] = body.llm_config.model
-    if body.llm_config.base_url:
-        llm_config_dict["base_url"] = body.llm_config.base_url
+    """Create a new design session using global LLM settings."""
+    settings = await get_raw_llm_config(db)
+    api_key = settings.get("llm_api_key")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="LLM API key not configured. Set it in Settings first.")
+
+    llm_config_dict: dict[str, Any] = {"api_key": api_key}
+    if settings.get("llm_model"):
+        llm_config_dict["model"] = settings["llm_model"]
+    if settings.get("llm_base_url"):
+        llm_config_dict["base_url"] = settings["llm_base_url"]
 
     repo = DesignSessionRepository(db)
     session = await repo.add(models.DesignSession(name=body.name, llm_config=llm_config_dict))

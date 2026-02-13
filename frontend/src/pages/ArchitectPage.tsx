@@ -152,24 +152,16 @@ export default function ArchitectPage() {
   }
 
   const handleCreateSession = async (config: { worker_id: string }) => {
-    try {
-      const apiKey = sessionStorage.getItem('llm_api_key') || localStorage.getItem('llm_settings') || ''
-      const session = await architectApi.createSession({
-        llm_config: {
-          api_key: apiKey,
-        },
-        worker_id: config.worker_id,
-      })
-      setSessionId(session.id)
-      setNewSessionModalOpen(false)
-      clearMessages()
-      setSessions([session, ...sessions])
-      navigate(`/architect/${session.id}`)
-      // Load full session messages
-      loadSession(session.id)
-    } catch {
-      // Error creating session
-    }
+    const session = await architectApi.createSession({
+      worker_id: config.worker_id,
+    })
+    setSessionId(session.id)
+    setNewSessionModalOpen(false)
+    clearMessages()
+    setSessions([session, ...sessions])
+    navigate(`/architect/${session.id}`)
+    // Load full session messages
+    loadSession(session.id)
   }
 
   const handleSend = (content: string) => {
@@ -185,10 +177,8 @@ export default function ArchitectPage() {
 
   const handleFinalize = async (repoPath: string) => {
     if (!sessionId) throw new Error('No active session')
-    const apiKey = sessionStorage.getItem('llm_api_key') || ''
     const project = await architectApi.finalize(sessionId, {
       repo_path: repoPath,
-      pm_llm_config: apiKey ? { api_key: apiKey } : undefined,
     })
     setShowFinalizeDialog(false)
     setFinalizedProject(project)

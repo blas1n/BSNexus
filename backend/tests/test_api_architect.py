@@ -17,6 +17,7 @@ from backend.src.models import (
     PhaseStatus,
     Project,
     ProjectStatus,
+    Setting,
 )
 
 
@@ -26,11 +27,35 @@ from backend.src.models import (
 LLM_CONFIG = {"api_key": "sk-test-key-1234", "model": "gpt-4o"}
 
 
-async def create_session_via_api(client: AsyncClient) -> dict:
-    """Helper to create a session through the API."""
+async def insert_global_llm_settings(
+    db_session,
+    api_key: str = "sk-test-key-1234",
+    model: str = "gpt-4o",
+    base_url: str | None = None,
+) -> None:
+    """Insert global LLM settings into the Setting table."""
+    db_session.add(Setting(key="llm_api_key", value=api_key))
+    db_session.add(Setting(key="llm_model", value=model))
+    if base_url:
+        db_session.add(Setting(key="llm_base_url", value=base_url))
+    await db_session.commit()
+
+
+async def create_session_via_api(client: AsyncClient, db_session=None) -> dict:
+    """Helper to create a session through the API.
+
+    Requires global LLM settings in DB. If db_session is provided and no settings exist,
+    they will be inserted automatically.
+    """
+    if db_session is not None:
+        from sqlalchemy import select
+        result = await db_session.execute(select(Setting).where(Setting.key == "llm_api_key"))
+        if result.scalar_one_or_none() is None:
+            await insert_global_llm_settings(db_session)
+
     response = await client.post(
         "/api/v1/architect/sessions",
-        json={"llm_config": LLM_CONFIG},
+        json={},
     )
     assert response.status_code == 201
     return response.json()
@@ -94,8 +119,8 @@ async def test_list_sessions_empty(client: AsyncClient, db_session):
 
 async def test_list_sessions_returns_all(client: AsyncClient, db_session):
     """GET /api/architect/sessions returns all sessions ordered by created_at desc."""
-    await create_session_via_api(client)
-    await create_session_via_api(client)
+    await create_session_via_api(client, db_session)
+    await create_session_via_api(client, db_session)
 
     response = await client.get("/api/v1/architect/sessions")
     assert response.status_code == 200
@@ -108,7 +133,7 @@ async def test_list_sessions_returns_all(client: AsyncClient, db_session):
 
 async def test_list_sessions_filter_by_status(client: AsyncClient, db_session):
     """GET /api/architect/sessions?status=active returns only active sessions."""
-    session_data = await create_session_via_api(client)
+    session_data = await create_session_via_api(client, db_session)
 
     # Create and finalize another session
     session2 = await create_session_in_db(db_session)
@@ -130,7 +155,7 @@ async def test_list_sessions_invalid_status(client: AsyncClient, db_session):
 
 async def test_list_sessions_with_messages_for_resume(client: AsyncClient, db_session):
     """Sessions list includes messages so user can resume conversations."""
-    session_data = await create_session_via_api(client)
+    session_data = await create_session_via_api(client, db_session)
     session_id = session_data["id"]
 
     # Send a message to build history
@@ -154,8 +179,8 @@ async def test_list_sessions_with_messages_for_resume(client: AsyncClient, db_se
 
 
 async def test_create_session_success(client: AsyncClient, db_session):
-    """POST /api/architect/sessions returns 201 with valid llm_config."""
-    data = await create_session_via_api(client)
+    """POST /api/architect/sessions returns 201 when global LLM settings exist."""
+    data = await create_session_via_api(client, db_session)
 
     assert "id" in data
     assert data["status"] == "active"
@@ -163,11 +188,12 @@ async def test_create_session_success(client: AsyncClient, db_session):
     assert len(data["messages"]) == 0
 
 
-async def test_create_session_stores_llm_config(client: AsyncClient, db_session):
-    """POST /api/architect/sessions stores llm_config in the session."""
+async def test_create_session_uses_global_settings(client: AsyncClient, db_session):
+    """POST /api/architect/sessions uses global LLM settings from DB."""
+    await insert_global_llm_settings(db_session, api_key="sk-custom", model="custom-model", base_url="https://custom.api")
     response = await client.post(
         "/api/v1/architect/sessions",
-        json={"llm_config": {"api_key": "sk-custom", "model": "custom-model", "base_url": "https://custom.api"}},
+        json={},
     )
     assert response.status_code == 201
     data = response.json()
@@ -176,22 +202,24 @@ async def test_create_session_stores_llm_config(client: AsyncClient, db_session)
     assert get_resp.status_code == 200
 
 
-async def test_create_session_minimal_config(client: AsyncClient, db_session):
-    """POST /api/architect/sessions works with only api_key."""
+async def test_create_session_minimal_global_settings(client: AsyncClient, db_session):
+    """POST /api/architect/sessions works with only api_key in global settings."""
+    await insert_global_llm_settings(db_session, api_key="sk-minimal", model="")
     response = await client.post(
         "/api/v1/architect/sessions",
-        json={"llm_config": {"api_key": "sk-minimal"}},
+        json={},
     )
     assert response.status_code == 201
 
 
 async def test_create_session_missing_api_key(client: AsyncClient, db_session):
-    """POST /api/architect/sessions returns 422 without api_key."""
+    """POST /api/architect/sessions returns 400 when no global LLM API key is configured."""
     response = await client.post(
         "/api/v1/architect/sessions",
-        json={"llm_config": {}},
+        json={},
     )
-    assert response.status_code == 422
+    assert response.status_code == 400
+    assert "LLM API key not configured" in response.json()["detail"]
 
 
 # ── Get Session Tests ────────────────────────────────────────────────
@@ -199,7 +227,7 @@ async def test_create_session_missing_api_key(client: AsyncClient, db_session):
 
 async def test_get_session_success(client: AsyncClient, db_session):
     """GET /api/architect/sessions/{id} returns 200 with messages."""
-    data = await create_session_via_api(client)
+    data = await create_session_via_api(client, db_session)
     session_id = data["id"]
 
     response = await client.get(f"/api/v1/architect/sessions/{session_id}")
@@ -224,7 +252,7 @@ async def test_get_session_not_found(client: AsyncClient, db_session):
 
 async def test_send_message_success(client: AsyncClient, db_session):
     """POST /api/architect/sessions/{id}/message returns assistant response."""
-    session_data = await create_session_via_api(client)
+    session_data = await create_session_via_api(client, db_session)
     session_id = session_data["id"]
 
     mock_response = MagicMock()
@@ -250,7 +278,7 @@ async def test_send_message_success(client: AsyncClient, db_session):
 
 async def test_send_message_saves_user_message(client: AsyncClient, db_session):
     """POST /api/architect/sessions/{id}/message saves user and assistant messages."""
-    session_data = await create_session_via_api(client)
+    session_data = await create_session_via_api(client, db_session)
     session_id = session_data["id"]
 
     with patch("backend.src.api.architect.LLMClient") as MockClient:
@@ -300,7 +328,7 @@ async def test_send_message_finalized_session(client: AsyncClient, db_session):
 
 async def test_send_message_llm_error(client: AsyncClient, db_session):
     """POST /api/architect/sessions/{id}/message returns 502 on LLM failure."""
-    session_data = await create_session_via_api(client)
+    session_data = await create_session_via_api(client, db_session)
     session_id = session_data["id"]
 
     with patch("backend.src.api.architect.LLMClient") as MockClient:
@@ -323,7 +351,7 @@ async def test_send_message_llm_error(client: AsyncClient, db_session):
 
 async def test_stream_message_success(client: AsyncClient, db_session):
     """POST /api/architect/sessions/{id}/message/stream returns SSE response."""
-    session_data = await create_session_via_api(client)
+    session_data = await create_session_via_api(client, db_session)
     session_id = session_data["id"]
 
     async def mock_stream_chat(messages, **kwargs):
@@ -415,7 +443,7 @@ MOCK_FINALIZE_RESPONSE = {
 
 async def test_finalize_design_success(client: AsyncClient, db_session):
     """POST /api/architect/sessions/{id}/finalize{id} creates project with phases and tasks."""
-    session_data = await create_session_via_api(client)
+    session_data = await create_session_via_api(client, db_session)
     session_id = session_data["id"]
 
     with patch("backend.src.api.architect.LLMClient") as MockClient:
@@ -446,7 +474,7 @@ async def test_finalize_design_success(client: AsyncClient, db_session):
 
 async def test_finalize_design_with_pm_config(client: AsyncClient, db_session):
     """POST /api/architect/sessions/{id}/finalize{id} stores pm_llm_config in project."""
-    session_data = await create_session_via_api(client)
+    session_data = await create_session_via_api(client, db_session)
     session_id = session_data["id"]
 
     with patch("backend.src.api.architect.LLMClient") as MockClient:
@@ -463,6 +491,7 @@ async def test_finalize_design_with_pm_config(client: AsyncClient, db_session):
 
     assert response.status_code == 200
     data = response.json()
+    # Architect config comes from global settings
     assert data["llm_config"]["architect"]["api_key"] == "sk-test-key-1234"
     assert data["llm_config"]["pm"]["api_key"] == "sk-pm-key"
     assert data["llm_config"]["pm"]["model"] == "gpt-4o"
@@ -494,7 +523,7 @@ async def test_finalize_already_finalized(client: AsyncClient, db_session):
 
 async def test_finalize_llm_error(client: AsyncClient, db_session):
     """POST /api/architect/sessions/{id}/finalize{id} returns 502 on LLM failure."""
-    session_data = await create_session_via_api(client)
+    session_data = await create_session_via_api(client, db_session)
     session_id = session_data["id"]
 
     with patch("backend.src.api.architect.LLMClient") as MockClient:
@@ -513,7 +542,7 @@ async def test_finalize_llm_error(client: AsyncClient, db_session):
 
 async def test_finalize_creates_task_dependencies(client: AsyncClient, db_session):
     """POST /api/architect/sessions/{id}/finalize{id} correctly wires task dependencies."""
-    session_data = await create_session_via_api(client)
+    session_data = await create_session_via_api(client, db_session)
     session_id = session_data["id"]
 
     with patch("backend.src.api.architect.LLMClient") as MockClient:
@@ -978,28 +1007,36 @@ class TestListSessionsDirect:
 class TestCreateSessionDirect:
     """Direct tests for create_session endpoint function."""
 
-    async def test_create_session_with_full_config(self, db_session):
+    async def test_create_session_with_full_global_settings(self, db_session):
         from backend.src.api.architect import create_session
         from backend.src import schemas
 
-        body = schemas.CreateSessionRequest(
-            llm_config=schemas.LLMConfigInput(api_key="sk-direct", model="gpt-4o", base_url="https://api.test")
-        )
+        await insert_global_llm_settings(db_session, api_key="sk-direct", model="gpt-4o", base_url="https://api.test")
+        body = schemas.CreateSessionRequest()
         result = await create_session(body=body, db=db_session)
         assert result.status == schemas.DesignSessionStatus.active
         assert result.project_id is None
         assert len(result.messages) == 0
 
-    async def test_create_session_minimal_config(self, db_session):
+    async def test_create_session_minimal_global_settings(self, db_session):
         from backend.src.api.architect import create_session
         from backend.src import schemas
 
-        body = schemas.CreateSessionRequest(
-            llm_config=schemas.LLMConfigInput(api_key="sk-min")
-        )
+        await insert_global_llm_settings(db_session, api_key="sk-min", model="")
+        body = schemas.CreateSessionRequest()
         result = await create_session(body=body, db=db_session)
         assert result.status == schemas.DesignSessionStatus.active
         assert len(result.messages) == 0
+
+    async def test_create_session_missing_global_api_key(self, db_session):
+        from backend.src.api.architect import create_session
+        from backend.src import schemas
+
+        body = schemas.CreateSessionRequest()
+        with pytest.raises(HTTPException) as exc_info:
+            await create_session(body=body, db=db_session)
+        assert exc_info.value.status_code == 400
+        assert "LLM API key not configured" in exc_info.value.detail
 
 
 # ── get_session (direct call) ────────────────────────────────────────

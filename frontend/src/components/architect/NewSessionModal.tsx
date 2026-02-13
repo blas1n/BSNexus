@@ -6,17 +6,20 @@ import type { Worker } from '../../types/worker'
 interface NewSessionModalProps {
   open: boolean
   onClose: () => void
-  onCreateSession: (config: { worker_id: string }) => void
+  onCreateSession: (config: { worker_id: string }) => Promise<void>
 }
 
 export default function NewSessionModal({ open, onClose, onCreateSession }: NewSessionModalProps) {
   const [workers, setWorkers] = useState<Worker[]>([])
   const [selectedWorkerId, setSelectedWorkerId] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+  const [creating, setCreating] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     if (open) {
       setLoading(true)
+      setError(null)
       workersApi.list()
         .then((list) => {
           setWorkers(list)
@@ -32,9 +35,18 @@ export default function NewSessionModal({ open, onClose, onCreateSession }: NewS
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
 
-  const handleCreate = () => {
+  const handleCreate = async () => {
     if (!selectedWorkerId) return
-    onCreateSession({ worker_id: selectedWorkerId })
+    setCreating(true)
+    setError(null)
+    try {
+      await onCreateSession({ worker_id: selectedWorkerId })
+    } catch (err: unknown) {
+      const axiosErr = err as { response?: { data?: { detail?: string } } }
+      setError(axiosErr.response?.data?.detail || 'Failed to create session')
+    } finally {
+      setCreating(false)
+    }
   }
 
   const selectedWorker = workers.find((w) => w.id === selectedWorkerId)
@@ -44,7 +56,7 @@ export default function NewSessionModal({ open, onClose, onCreateSession }: NewS
       <Button variant="secondary" onClick={onClose}>
         Cancel
       </Button>
-      <Button onClick={handleCreate} disabled={!selectedWorkerId}>
+      <Button onClick={handleCreate} disabled={!selectedWorkerId || creating} loading={creating}>
         Create Session
       </Button>
     </>
@@ -53,6 +65,9 @@ export default function NewSessionModal({ open, onClose, onCreateSession }: NewS
   return (
     <Modal open={open} onClose={onClose} title="New Session" footer={footer} width={520}>
       <div className="space-y-3">
+        {error && (
+          <p className="text-sm text-red-500">{error}</p>
+        )}
         {/* Section header */}
         <div className="flex items-center gap-2">
           <span className="text-sm font-semibold text-text-primary tracking-wide">Select Worker</span>

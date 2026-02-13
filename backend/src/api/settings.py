@@ -9,6 +9,16 @@ from backend.src.storage.database import get_db
 
 router = APIRouter(prefix="/api/v1/settings", tags=["settings"])
 
+_LLM_SETTING_KEYS = ("llm_api_key", "llm_model", "llm_base_url")
+
+
+async def get_raw_llm_config(db: AsyncSession) -> dict[str, str]:
+    """Read global LLM settings from DB as a plain dict (unmasked)."""
+    result = await db.execute(
+        select(models.Setting).where(models.Setting.key.in_(_LLM_SETTING_KEYS))
+    )
+    return {s.key: s.value for s in result.scalars().all()}
+
 
 def mask_api_key(key: str | None) -> str | None:
     """Mask API key for display: sk-ant-abc...xyz -> sk-****...xyz"""
