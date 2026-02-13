@@ -8,17 +8,27 @@ interface RegistrationTokenModalProps {
 }
 
 export default function RegistrationTokenModal({ open, onClose }: RegistrationTokenModalProps) {
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="Registration Token"
+      footer={<Button variant="secondary" onClick={onClose}>Close</Button>}
+    >
+      {open && <RegistrationTokenContent />}
+    </Modal>
+  )
+}
+
+function RegistrationTokenContent() {
   const [token, setToken] = useState<string | null>(null)
   const [serverUrl, setServerUrl] = useState<string | null>(null)
   const [redisUrl, setRedisUrl] = useState<string | null>(null)
-  const [loading, setLoading] = useState(false)
+  const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
 
   useEffect(() => {
-    if (!open) return
-    setLoading(true)
-    setError(null)
     registrationTokensApi
       .create()
       .then((res) => {
@@ -28,7 +38,7 @@ export default function RegistrationTokenModal({ open, onClose }: RegistrationTo
       })
       .catch(() => setError('Failed to create registration token'))
       .finally(() => setLoading(false))
-  }, [open])
+  }, [])
 
   const command = token
     ? `bsnexus-worker register \\\n  --url ${serverUrl ?? 'http://<SERVER_HOST>:8000'} \\\n  --token ${token} \\\n  --redis-url ${redisUrl ?? 'redis://localhost:6379'} \\\n  --executor claude-code`
@@ -42,53 +52,46 @@ export default function RegistrationTokenModal({ open, onClose }: RegistrationTo
   }, [command])
 
   return (
-    <Modal
-      open={open}
-      onClose={onClose}
-      title="Registration Token"
-      footer={<Button variant="secondary" onClick={onClose}>Close</Button>}
-    >
-      <div className="space-y-4">
-        <p className="text-text-secondary text-sm">
-          Run this command on the worker machine to register it with this server.
-        </p>
+    <div className="space-y-4">
+      <p className="text-text-secondary text-sm">
+        Run this command on the worker machine to register it with this server.
+      </p>
 
-        {loading && (
-          <p className="text-text-secondary text-sm">Generating token...</p>
-        )}
+      {loading && (
+        <p className="text-text-secondary text-sm">Generating token...</p>
+      )}
 
-        {error && (
-          <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-            {error}
+      {error && (
+        <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+          {error}
+        </div>
+      )}
+
+      {token && (
+        <>
+          {/* Token field */}
+          <div className="space-y-1.5">
+            <label className="text-text-secondary text-sm">Token</label>
+            <input
+              type="text"
+              value={token}
+              readOnly
+              className="w-full bg-bg-input border border-border rounded-md px-3 py-2 text-text-primary text-sm focus:outline-none"
+            />
           </div>
-        )}
 
-        {token && (
-          <>
-            {/* Token field */}
-            <div className="space-y-1.5">
-              <label className="text-text-secondary text-sm">Token</label>
-              <input
-                type="text"
-                value={token}
-                readOnly
-                className="w-full bg-bg-input border border-border rounded-md px-3 py-2 text-text-primary text-sm focus:outline-none"
-              />
+          {/* Command field */}
+          <div className="space-y-1.5">
+            <label className="text-text-secondary text-sm">Command</label>
+            <div className="bg-bg-elevated rounded-md p-4 font-mono text-sm text-accent-text whitespace-pre-wrap break-all">
+              {command}
             </div>
-
-            {/* Command field */}
-            <div className="space-y-1.5">
-              <label className="text-text-secondary text-sm">Command</label>
-              <div className="bg-bg-elevated rounded-md p-4 font-mono text-sm text-accent-text whitespace-pre-wrap break-all">
-                {command}
-              </div>
-              <Button variant="secondary" size="sm" onClick={handleCopy}>
-                {copied ? 'Copied!' : 'Copy'}
-              </Button>
-            </div>
-          </>
-        )}
-      </div>
-    </Modal>
+            <Button variant="secondary" size="sm" onClick={handleCopy}>
+              {copied ? 'Copied!' : 'Copy'}
+            </Button>
+          </div>
+        </>
+      )}
+    </div>
   )
 }
