@@ -746,16 +746,22 @@ async def test_add_task_llm_error(client: AsyncClient, db_session):
 
 async def test_websocket_session_not_found(client: AsyncClient, db_session):
     """WS /ws/architect/{random_id} sends error and closes when session not found."""
+    from contextlib import asynccontextmanager
     from starlette.testclient import TestClient
     from backend.src.main import app
 
-    # Use synchronous TestClient for WebSocket testing
-    with TestClient(app) as sync_client:
-        random_id = str(uuid.uuid4())
-        with sync_client.websocket_connect(f"/ws/architect/{random_id}") as ws:
-            data = ws.receive_json()
-            assert data["type"] == "error"
-            assert "Session not found" in data["content"]
+    @asynccontextmanager
+    async def _override_session():
+        yield db_session
+
+    # Patch async_session so the WebSocket handler uses the test DB
+    with patch("backend.src.storage.database.async_session", _override_session):
+        with TestClient(app) as sync_client:
+            random_id = str(uuid.uuid4())
+            with sync_client.websocket_connect(f"/ws/architect/{random_id}") as ws:
+                data = ws.receive_json()
+                assert data["type"] == "error"
+                assert "Session not found" in data["content"]
 
 
 # ══════════════════════════════════════════════════════════════════════
