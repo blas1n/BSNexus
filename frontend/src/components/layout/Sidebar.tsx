@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
-import { LayoutDashboard, Bot, Kanban, Users, Settings } from 'lucide-react'
+import { LayoutDashboard, Bot, Kanban, Users, Settings, Sun, Moon, Monitor } from 'lucide-react'
 import { SettingsModal } from './SettingsModal'
+import { useThemeStore } from '../../stores/themeStore'
 
 const navItems = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard },
@@ -13,6 +14,15 @@ const navItems = [
 export default function Sidebar() {
   const location = useLocation()
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const { theme, setTheme } = useThemeStore()
+
+  const cycleTheme = () => {
+    const next = theme === 'light' ? 'dark' : theme === 'dark' ? 'system' : 'light'
+    setTheme(next)
+  }
+
+  const ThemeIcon = theme === 'light' ? Sun : theme === 'dark' ? Moon : Monitor
+  const themeLabel = theme === 'light' ? 'Light' : theme === 'dark' ? 'Dark' : 'System'
 
   const isActive = (to: string) => {
     if (to === '/') return location.pathname === '/'
@@ -55,8 +65,16 @@ export default function Sidebar() {
         })}
       </nav>
 
-      {/* Settings (pushed to bottom) */}
-      <div className="mt-auto px-3 pb-4">
+      {/* Theme toggle + Settings (pushed to bottom) */}
+      <div className="mt-auto px-3 pb-4 flex flex-col gap-1">
+        <button
+          type="button"
+          onClick={cycleTheme}
+          className="flex items-center gap-3 px-3 py-2 text-sm text-text-secondary hover:bg-bg-hover rounded-md cursor-pointer transition-colors w-full"
+        >
+          <ThemeIcon size={18} />
+          {themeLabel}
+        </button>
         <button
           type="button"
           onClick={() => setSettingsOpen(true)}
