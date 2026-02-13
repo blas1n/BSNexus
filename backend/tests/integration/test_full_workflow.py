@@ -22,7 +22,7 @@ def _async_iter(items: list):
 async def _create_project(client: AsyncClient) -> dict:
     """Create a project via API and return the response data."""
     response = await client.post(
-        "/api/v1/projects/",
+        "/api/v1/projects",
         json={
             "name": "Integration Test Project",
             "description": "Project for integration testing",
@@ -94,7 +94,7 @@ async def test_project_lifecycle(client: AsyncClient):
     assert project["status"] == "design"
 
     # 2. Verify project appears in list
-    list_resp = await client.get("/api/v1/projects/")
+    list_resp = await client.get("/api/v1/projects")
     assert list_resp.status_code == 200
     project_ids = {p["id"] for p in list_resp.json()}
     assert project["id"] in project_ids

@@ -10,7 +10,7 @@ from httpx import AsyncClient
 async def _create_project_and_phase(client: AsyncClient) -> tuple[str, str]:
     """Create a project and phase, return (project_id, phase_id)."""
     project_resp = await client.post(
-        "/api/v1/projects/",
+        "/api/v1/projects",
         json={
             "name": "State Machine Test Project",
             "description": "Testing state machine",
