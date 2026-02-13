@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 import uuid
@@ -41,9 +42,17 @@ def _build_llm_config(llm_config_dict: dict[str, Any] | None) -> LLMConfig:
 
 
 def _build_message_history(session: models.DesignSession) -> list[dict[str, str]]:
-    """Build LLM message history from a session's messages."""
-    sorted_messages = sorted(session.messages, key=lambda m: m.created_at)
-    return [
+    """Build LLM message history from a session's messages.
+
+    Prepends the system prompt from the prompt template with role='system',
+    then appends all stored messages (user + assistant) in chronological order.
+    """
+    history: list[dict[str, str]] = [
+        {"role": "system", "content": get_prompt("architect", "system")},
+    ]
+    chat_messages = [m for m in session.messages if m.message_type == models.MessageType.chat]
+    sorted_messages = sorted(chat_messages, key=lambda m: m.created_at)
+    history.extend(
         {
             "role": (
                 m.role.value if isinstance(m.role, models.MessageRole) else str(m.role)
@@ -51,7 +60,8 @@ def _build_message_history(session: models.DesignSession) -> list[dict[str, str]
             "content": m.content,
         }
         for m in sorted_messages
-    ]
+    )
+    return history
 
 
 # ── 0. List Sessions ─────────────────────────────────────────────────
@@ -71,6 +81,8 @@ async def list_sessions(
         except ValueError:
             raise HTTPException(status_code=400, detail=f"Invalid status: {status}")
     sessions = await repo.list_sessions(status=status_filter)
+    for s in sessions:
+        s.messages = [m for m in s.messages if m.message_type == models.MessageType.chat]
     return [schemas.DesignSessionResponse.model_validate(s) for s in sessions]
 
 
@@ -93,9 +105,6 @@ async def create_session(
 
     repo = DesignSessionRepository(db)
     session = await repo.add(models.DesignSession(name=body.name, llm_config=llm_config_dict))
-    await repo.add_message(
-        session.id, models.MessageRole.assistant, get_prompt("architect", "system")
-    )
     await repo.commit()
 
     # Reload with messages
@@ -118,6 +127,7 @@ async def get_session(
     session = await repo.get_by_id(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
+    session.messages = [m for m in session.messages if m.message_type == models.MessageType.chat]
     return schemas.DesignSessionResponse.model_validate(session)
 
 
@@ -328,6 +338,20 @@ async def finalize_design(
         )
     except LLMError as e:
         raise HTTPException(status_code=502, detail=f"LLM error: {e}") from e
+
+    # Store finalize prompt and response as internal messages for auditability
+    await session_repo.add_message(
+        session.id,
+        models.MessageRole.user,
+        get_prompt("architect", "finalize"),
+        message_type=models.MessageType.internal,
+    )
+    await session_repo.add_message(
+        session.id,
+        models.MessageRole.assistant,
+        json.dumps(result, ensure_ascii=False),
+        message_type=models.MessageType.internal,
+    )
 
     # Build llm_config for the project
     project_llm_config: dict[str, Any] = {

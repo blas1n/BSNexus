@@ -9,10 +9,10 @@ from fastapi import HTTPException, WebSocketDisconnect
 from httpx import AsyncClient
 
 from backend.src.models import (
-    DesignMessage,
     DesignSession,
     DesignSessionStatus,
     MessageRole,
+    MessageType,
     Phase,
     PhaseStatus,
     Project,
@@ -47,16 +47,6 @@ async def create_session_in_db(db_session) -> DesignSession:
         updated_at=now,
     )
     db_session.add(session)
-
-    # Add system message
-    msg = DesignMessage(
-        id=uuid.uuid4(),
-        session_id=session.id,
-        role=MessageRole.assistant,
-        content="System prompt",
-        created_at=now,
-    )
-    db_session.add(msg)
     await db_session.commit()
     return session
 
@@ -111,10 +101,9 @@ async def test_list_sessions_returns_all(client: AsyncClient, db_session):
     assert response.status_code == 200
     data = response.json()
     assert len(data) == 2
-    # Each session should have messages
+    # Each session should have messages field
     for s in data:
         assert "messages" in s
-        assert len(s["messages"]) >= 1
 
 
 async def test_list_sessions_filter_by_status(client: AsyncClient, db_session):
@@ -158,7 +147,7 @@ async def test_list_sessions_with_messages_for_resume(client: AsyncClient, db_se
     assert response.status_code == 200
     data = response.json()
     target = [s for s in data if s["id"] == session_id][0]
-    assert len(target["messages"]) == 3  # system + user + assistant
+    assert len(target["messages"]) == 2  # user + assistant
 
 
 # ── Session Creation Tests ───────────────────────────────────────────
@@ -171,9 +160,7 @@ async def test_create_session_success(client: AsyncClient, db_session):
     assert "id" in data
     assert data["status"] == "active"
     assert data["project_id"] is None
-    assert len(data["messages"]) == 1
-    assert data["messages"][0]["role"] == "assistant"
-    assert "AI Architect" in data["messages"][0]["content"]
+    assert len(data["messages"]) == 0
 
 
 async def test_create_session_stores_llm_config(client: AsyncClient, db_session):
@@ -221,7 +208,7 @@ async def test_get_session_success(client: AsyncClient, db_session):
     session_data = response.json()
     assert session_data["id"] == session_id
     assert session_data["status"] == "active"
-    assert len(session_data["messages"]) >= 1
+    assert isinstance(session_data["messages"], list)
 
 
 async def test_get_session_not_found(client: AsyncClient, db_session):
@@ -278,11 +265,11 @@ async def test_send_message_saves_user_message(client: AsyncClient, db_session):
     # Verify both messages are saved
     get_resp = await client.get(f"/api/v1/architect/sessions/{session_id}")
     messages = get_resp.json()["messages"]
-    # Initial system msg + user msg + assistant msg = 3
-    assert len(messages) == 3
+    # user msg + assistant msg = 2
+    assert len(messages) == 2
     roles = [m["role"] for m in messages]
     assert "user" in roles
-    assert roles.count("assistant") == 2  # system prompt + LLM response
+    assert roles.count("assistant") == 1  # LLM response only
 
 
 async def test_send_message_session_not_found(client: AsyncClient, db_session):
@@ -872,26 +859,32 @@ class TestBuildMessageHistoryDirect:
         msg1.role = MessageRole.assistant
         msg1.content = "Hello"
         msg1.created_at = now
+        msg1.message_type = MessageType.chat
 
         msg2 = MagicMock()
         msg2.role = MessageRole.user
         msg2.content = "Help me"
         msg2.created_at = datetime(2099, 1, 2, tzinfo=timezone.utc)
+        msg2.message_type = MessageType.chat
 
         session.messages = [msg2, msg1]  # intentionally reversed to test sorting
 
-        result = _build_message_history(session)
-        assert len(result) == 2
-        # Should be sorted by created_at: msg1 first, msg2 second
-        assert result[0] == {"role": "assistant", "content": "Hello"}
-        assert result[1] == {"role": "user", "content": "Help me"}
+        with patch("backend.src.api.architect.get_prompt", return_value="System prompt"):
+            result = _build_message_history(session)
+        assert len(result) == 3
+        # First should be system prompt, then sorted messages
+        assert result[0] == {"role": "system", "content": "System prompt"}
+        assert result[1] == {"role": "assistant", "content": "Hello"}
+        assert result[2] == {"role": "user", "content": "Help me"}
 
     def test_with_empty_messages(self):
         from backend.src.api.architect import _build_message_history
         session = MagicMock()
         session.messages = []
-        result = _build_message_history(session)
-        assert result == []
+        with patch("backend.src.api.architect.get_prompt", return_value="System prompt"):
+            result = _build_message_history(session)
+        assert len(result) == 1
+        assert result[0] == {"role": "system", "content": "System prompt"}
 
     def test_with_string_role(self):
         from backend.src.api.architect import _build_message_history
@@ -900,9 +893,40 @@ class TestBuildMessageHistoryDirect:
         msg.role = "user"  # plain string, no .value attr
         msg.content = "Test"
         msg.created_at = datetime.now(timezone.utc)
+        msg.message_type = MessageType.chat
         session.messages = [msg]
-        result = _build_message_history(session)
-        assert result[0]["role"] == "user"
+        with patch("backend.src.api.architect.get_prompt", return_value="System prompt"):
+            result = _build_message_history(session)
+        assert result[0]["role"] == "system"
+        assert result[1]["role"] == "user"
+
+    def test_excludes_internal_messages(self):
+        """Internal messages should be excluded from LLM message history."""
+        from backend.src.api.architect import _build_message_history
+
+        now = datetime.now(timezone.utc)
+        session = MagicMock()
+
+        chat_msg = MagicMock()
+        chat_msg.role = MessageRole.user
+        chat_msg.content = "Hello"
+        chat_msg.created_at = now
+        chat_msg.message_type = MessageType.chat
+
+        internal_msg = MagicMock()
+        internal_msg.role = MessageRole.user
+        internal_msg.content = "finalize prompt"
+        internal_msg.created_at = datetime(2099, 1, 1, tzinfo=timezone.utc)
+        internal_msg.message_type = MessageType.internal
+
+        session.messages = [chat_msg, internal_msg]
+
+        with patch("backend.src.api.architect.get_prompt", return_value="System prompt"):
+            result = _build_message_history(session)
+        # Only system + chat_msg, internal excluded
+        assert len(result) == 2
+        assert result[0] == {"role": "system", "content": "System prompt"}
+        assert result[1] == {"role": "user", "content": "Hello"}
 
 
 # ── list_sessions (direct call) ──────────────────────────────────────
@@ -964,8 +988,7 @@ class TestCreateSessionDirect:
         result = await create_session(body=body, db=db_session)
         assert result.status == schemas.DesignSessionStatus.active
         assert result.project_id is None
-        assert len(result.messages) == 1
-        assert result.messages[0].role == schemas.MessageRole.assistant
+        assert len(result.messages) == 0
 
     async def test_create_session_minimal_config(self, db_session):
         from backend.src.api.architect import create_session
@@ -976,7 +999,7 @@ class TestCreateSessionDirect:
         )
         result = await create_session(body=body, db=db_session)
         assert result.status == schemas.DesignSessionStatus.active
-        assert len(result.messages) == 1
+        assert len(result.messages) == 0
 
 
 # ── get_session (direct call) ────────────────────────────────────────
@@ -997,6 +1020,81 @@ class TestGetSessionDirect:
         with pytest.raises(HTTPException) as exc_info:
             await get_session(session_id=uuid.uuid4(), db=db_session)
         assert exc_info.value.status_code == 404
+
+
+# ── Internal message filtering tests ─────────────────────────────
+
+
+class TestInternalMessageFiltering:
+    """Tests that internal messages are excluded from API responses."""
+
+    async def test_get_session_excludes_internal_messages(self, db_session):
+        """get_session should not include internal messages in the response."""
+        from backend.src.api.architect import get_session
+        from backend.src.repositories.design_session_repository import DesignSessionRepository
+
+        session = await create_session_in_db(db_session)
+        repo = DesignSessionRepository(db_session)
+        await repo.add_message(session.id, MessageRole.user, "Hello", message_type=MessageType.chat)
+        await repo.add_message(session.id, MessageRole.assistant, "Hi there", message_type=MessageType.chat)
+        await repo.add_message(
+            session.id, MessageRole.user, "finalize prompt", message_type=MessageType.internal
+        )
+        await repo.add_message(
+            session.id, MessageRole.assistant, '{"phases": []}', message_type=MessageType.internal
+        )
+        await repo.commit()
+
+        result = await get_session(session_id=session.id, db=db_session)
+        assert len(result.messages) == 2
+        assert all(m.content != "finalize prompt" for m in result.messages)
+
+    async def test_list_sessions_excludes_internal_messages(self, db_session):
+        """list_sessions should not include internal messages in any session."""
+        from backend.src.api.architect import list_sessions
+        from backend.src.repositories.design_session_repository import DesignSessionRepository
+
+        session = await create_session_in_db(db_session)
+        repo = DesignSessionRepository(db_session)
+        await repo.add_message(session.id, MessageRole.user, "Hello", message_type=MessageType.chat)
+        await repo.add_message(
+            session.id, MessageRole.assistant, "internal response", message_type=MessageType.internal
+        )
+        await repo.commit()
+
+        result = await list_sessions(status=None, db=db_session)
+        target = [s for s in result if s.id == session.id][0]
+        assert len(target.messages) == 1
+        assert target.messages[0].content == "Hello"
+
+    async def test_finalize_stores_internal_messages(self, db_session):
+        """finalize_design should store finalize prompt/response as internal messages."""
+        from backend.src.api.architect import finalize_design
+        from backend.src import schemas
+        from backend.src.models import DesignMessage
+        from sqlalchemy import select
+
+        session = await create_session_in_db(db_session)
+        body = schemas.FinalizeRequest(repo_path="/test/repo")
+
+        with patch("backend.src.api.architect.LLMClient") as MockClient:
+            instance = MockClient.return_value
+            instance.structured_output = AsyncMock(return_value=MOCK_FINALIZE_RESPONSE)
+
+            await finalize_design(session_id=session.id, body=body, db=db_session)
+
+        # Query internal messages directly to bypass identity map caching
+        result = await db_session.execute(
+            select(DesignMessage)
+            .where(DesignMessage.session_id == session.id)
+            .where(DesignMessage.message_type == MessageType.internal)
+            .order_by(DesignMessage.created_at)
+        )
+        internal_msgs = list(result.scalars().all())
+        assert len(internal_msgs) == 2
+        # First internal: finalize prompt (user), second: LLM JSON response (assistant)
+        assert internal_msgs[0].role == MessageRole.user
+        assert internal_msgs[1].role == MessageRole.assistant
 
 
 # ── send_message (direct call) ───────────────────────────────────────

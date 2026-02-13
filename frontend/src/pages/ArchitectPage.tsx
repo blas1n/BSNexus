@@ -82,7 +82,7 @@ export default function ArchitectPage() {
         addMessage({
           id: crypto.randomUUID(),
           role: 'assistant',
-          content: `Error: ${msg.message || 'Unknown error'}`,
+          content: `Error: ${msg.content || msg.message || 'Unknown error'}`,
           createdAt: new Date().toISOString(),
         })
         break
@@ -165,7 +165,7 @@ export default function ArchitectPage() {
       clearMessages()
       setSessions([session, ...sessions])
       navigate(`/architect/${session.id}`)
-      // Load full session messages (includes system message)
+      // Load full session messages
       loadSession(session.id)
     } catch {
       // Error creating session
@@ -243,7 +243,7 @@ export default function ArchitectPage() {
               <span className={`inline-block w-2 h-2 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`} />
               <span className="text-xs text-text-secondary">{isConnected ? 'Connected' : 'Disconnected'}</span>
             </div>
-            {messages.length > 0 && !isStreaming && (
+            {messages.some((m) => m.role === 'user') && !isStreaming && (
               <button
                 onClick={() => setShowFinalizeDialog(true)}
                 className="px-3 py-1.5 text-sm font-medium rounded-md bg-green-600 text-white hover:bg-green-700 transition-colors"
@@ -264,9 +264,18 @@ export default function ArchitectPage() {
         <div className="flex-1 flex flex-col">
           {/* Messages area */}
           <div className="flex-1 overflow-y-auto p-4 space-y-2">
-            {messages.map((msg) => (
-              <ChatMessage key={msg.id} message={msg} />
-            ))}
+            {messages.length === 0 ? (
+              <div className="flex-1 flex items-center justify-center h-full">
+                <div className="text-center space-y-2">
+                  <p className="text-lg font-medium text-text-secondary">안녕하세요! BSNexus Architect입니다.</p>
+                  <p className="text-sm text-text-muted">어떤 프로젝트를 만들고 싶으신가요?</p>
+                </div>
+              </div>
+            ) : (
+              messages.map((msg) => (
+                <ChatMessage key={msg.id} message={msg} />
+              ))
+            )}
             <div ref={messagesEndRef} />
           </div>
 
