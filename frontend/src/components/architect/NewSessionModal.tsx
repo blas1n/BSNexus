@@ -1,157 +1,113 @@
 import { useState, useEffect } from 'react'
 import { Modal, Button } from '../common'
-
-interface LLMSettings {
-  api_key: string
-  default_model: string
-  base_url: string
-}
-
-const LLM_SETTINGS_KEY = 'llm_settings'
-
-const MODEL_SUGGESTIONS = [
-  'anthropic/claude-sonnet-4-20250514',
-  'openai/gpt-4o',
-]
+import { workersApi } from '../../api/workers'
+import type { Worker } from '../../types/worker'
 
 interface NewSessionModalProps {
   open: boolean
   onClose: () => void
-  onCreateSession: (config: { model: string; api_key: string; base_url?: string; name?: string }) => void
+  onCreateSession: (config: { worker_id: string }) => void
 }
 
 export default function NewSessionModal({ open, onClose, onCreateSession }: NewSessionModalProps) {
-  const [sessionName, setSessionName] = useState('')
-  const [apiKey, setApiKey] = useState('')
-  const [model, setModel] = useState(MODEL_SUGGESTIONS[0])
-  const [baseUrl, setBaseUrl] = useState('')
-  const [hasStoredSettings, setHasStoredSettings] = useState(false)
-  const [showSuggestions, setShowSuggestions] = useState(false)
+  const [workers, setWorkers] = useState<Worker[]>([])
+  const [selectedWorkerId, setSelectedWorkerId] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
 
   useEffect(() => {
     if (open) {
-      const saved = localStorage.getItem(LLM_SETTINGS_KEY)
-      if (saved) {
-        try {
-          const settings: LLMSettings = JSON.parse(saved)
-          if (settings.api_key) {
-            setApiKey(settings.api_key)
-            setHasStoredSettings(true)
+      setLoading(true)
+      workersApi.list()
+        .then((list) => {
+          setWorkers(list)
+          if (list.length > 0 && !selectedWorkerId) {
+            setSelectedWorkerId(list[0].id)
           }
-          if (settings.default_model) {
-            setModel(settings.default_model)
-          }
-          if (settings.base_url) {
-            setBaseUrl(settings.base_url)
-          }
-        } catch {
-          /* ignore malformed data */
-        }
-      }
-      // Also check sessionStorage for legacy key
-      const sessionKey = sessionStorage.getItem('llm_api_key')
-      if (sessionKey && !apiKey) {
-        setApiKey(sessionKey)
-        setHasStoredSettings(true)
-      }
+        })
+        .catch(() => {
+          setWorkers([])
+        })
+        .finally(() => setLoading(false))
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
 
   const handleCreate = () => {
-    if (!apiKey.trim()) return
-    sessionStorage.setItem('llm_api_key', apiKey)
-    onCreateSession({
-      api_key: apiKey,
-      model: model || MODEL_SUGGESTIONS[0],
-      base_url: baseUrl || undefined,
-      name: sessionName.trim() || undefined,
-    })
-    // Reset form
-    setSessionName('')
+    if (!selectedWorkerId) return
+    onCreateSession({ worker_id: selectedWorkerId })
   }
+
+  const selectedWorker = workers.find((w) => w.id === selectedWorkerId)
 
   const footer = (
     <>
       <Button variant="secondary" onClick={onClose}>
         Cancel
       </Button>
-      <Button onClick={handleCreate} disabled={!apiKey.trim()}>
+      <Button onClick={handleCreate} disabled={!selectedWorkerId}>
         Create Session
       </Button>
     </>
   )
 
   return (
-    <Modal open={open} onClose={onClose} title="New Session" footer={footer} width={448}>
-      <div className="space-y-4">
-        <div>
-          <label className="block text-sm text-text-secondary mb-1.5">Session Name (optional)</label>
-          <input
-            type="text"
-            value={sessionName}
-            onChange={(e) => setSessionName(e.target.value)}
-            placeholder="e.g. E-commerce API Design"
-            className="w-full px-3 py-2 bg-bg-input border border-border rounded-md text-text-primary text-sm placeholder:text-text-muted focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent"
-          />
+    <Modal open={open} onClose={onClose} title="New Session" footer={footer} width={520}>
+      <div className="space-y-3">
+        {/* Section header */}
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-semibold text-text-primary tracking-wide">Select Worker</span>
+          <span className="text-[11px] text-text-muted">(cannot be changed after creation)</span>
         </div>
 
-        {hasStoredSettings && (
-          <div className="rounded-md bg-accent/5 border border-accent/20 px-3 py-2">
-            <p className="text-sm text-text-secondary">
-              Using saved LLM settings with model <span className="font-medium text-text-primary">{model}</span>
-            </p>
+        {/* Worker list */}
+        {loading ? (
+          <div className="py-8 text-center text-sm text-text-muted">Loading workers...</div>
+        ) : workers.length === 0 ? (
+          <div className="py-8 text-center text-sm text-text-muted">No workers registered</div>
+        ) : (
+          <div className="space-y-1.5">
+            {workers.map((worker) => {
+              const isSelected = worker.id === selectedWorkerId
+              const isOnline = worker.status !== 'offline'
+              return (
+                <button
+                  key={worker.id}
+                  onClick={() => setSelectedWorkerId(worker.id)}
+                  className={`w-full flex items-center justify-between h-11 px-3 rounded-lg border transition-colors ${
+                    isSelected
+                      ? 'bg-bg-hover border-accent'
+                      : 'bg-bg-input border-border-subtle hover:border-border'
+                  }`}
+                >
+                  <div className="flex items-center gap-2.5">
+                    {/* Radio indicator */}
+                    <span
+                      className={`flex items-center justify-center w-[18px] h-[18px] rounded-full border-2 transition-colors ${
+                        isSelected ? 'border-accent bg-accent' : 'border-border'
+                      }`}
+                    >
+                      {isSelected && (
+                        <span className="w-2 h-2 rounded-full bg-white" />
+                      )}
+                    </span>
+                    <span className={`text-[13px] font-medium ${isSelected ? 'text-text-primary' : 'text-text-secondary'}`}>
+                      {worker.name}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] font-mono text-text-muted">{worker.platform}</span>
+                    <span className={`w-2 h-2 rounded-full ${isOnline ? 'bg-emerald-500' : 'bg-gray-500'}`} />
+                  </div>
+                </button>
+              )
+            })}
           </div>
         )}
 
-        <div>
-          <label className="block text-sm text-text-secondary mb-1.5">API Key</label>
-          <input
-            type="password"
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-            placeholder="sk-..."
-            className="w-full px-3 py-2 bg-bg-input border border-border rounded-md text-text-primary text-sm placeholder:text-text-muted focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent"
-          />
-          <p className="mt-1 text-xs text-text-tertiary">Stored in sessionStorage only (cleared on tab close)</p>
-        </div>
-
-        <div className="relative">
-          <label className="block text-sm text-text-secondary mb-1.5">Model</label>
-          <input
-            type="text"
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-            onFocus={() => setShowSuggestions(true)}
-            onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
-            placeholder="e.g. openai/gpt-4o"
-            className="w-full px-3 py-2 bg-bg-input border border-border rounded-md text-text-primary text-sm placeholder:text-text-muted focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent"
-          />
-          {showSuggestions && (
-            <ul className="absolute z-10 mt-1 w-full bg-bg-card border border-border rounded-md shadow-lg">
-              {MODEL_SUGGESTIONS.map((suggestion) => (
-                <li
-                  key={suggestion}
-                  onMouseDown={() => { setModel(suggestion); setShowSuggestions(false) }}
-                  className="px-3 py-2 text-sm text-text-primary hover:bg-accent/10 cursor-pointer"
-                >
-                  {suggestion}
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-
-        <div>
-          <label className="block text-sm text-text-secondary mb-1.5">Base URL (optional)</label>
-          <input
-            type="text"
-            value={baseUrl}
-            onChange={(e) => setBaseUrl(e.target.value)}
-            placeholder="https://your-litellm-proxy.com"
-            className="w-full px-3 py-2 bg-bg-input border border-border rounded-md text-text-primary text-sm placeholder:text-text-muted focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent"
-          />
-        </div>
+        {/* Selection status */}
+        {selectedWorker && (
+          <p className="text-xs text-text-muted">{selectedWorker.name} selected</p>
+        )}
       </div>
     </Modal>
   )

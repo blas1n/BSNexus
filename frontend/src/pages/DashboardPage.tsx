@@ -55,7 +55,7 @@ export default function DashboardPage() {
 
   return (
     <>
-      <Header title="Dashboard" action={<Button size="sm" onClick={() => navigate('/architect')}>New Project</Button>} />
+      <Header title="Dashboard" action={<Button size="sm" onClick={() => navigate('/architect', { state: { openNewSession: true } })}>New Project</Button>} />
       <div className="p-8">
         {/* Stat Cards */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">

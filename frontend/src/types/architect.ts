@@ -28,6 +28,7 @@ export interface LLMConfigInput {
 export interface CreateSessionRequest {
   llm_config: LLMConfigInput
   name?: string
+  worker_id?: string
 }
 
 export interface MessageRequest {

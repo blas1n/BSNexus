@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { useArchitectStore } from '../stores/architectStore'
 import type { ChatMessage as ChatMessageType } from '../stores/architectStore'
 import { useWebSocket } from '../hooks/useWebSocket'
@@ -17,6 +17,7 @@ import Header from '../components/layout/Header'
 export default function ArchitectPage() {
   const { sessionId: paramSessionId } = useParams()
   const navigate = useNavigate()
+  const location = useLocation()
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   const {
@@ -115,6 +116,17 @@ export default function ArchitectPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // Auto-open new session modal when navigated from dashboard
+  useEffect(() => {
+    const state = location.state as { openNewSession?: boolean } | null
+    if (state?.openNewSession) {
+      setNewSessionModalOpen(true)
+      // Clear the state so it doesn't re-trigger on back/forward navigation
+      navigate(location.pathname, { replace: true, state: {} })
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.state])
+
   // Load session from URL param
   useEffect(() => {
     if (paramSessionId && paramSessionId !== sessionId) {
@@ -139,15 +151,14 @@ export default function ArchitectPage() {
     }
   }
 
-  const handleCreateSession = async (config: { model: string; api_key: string; base_url?: string; name?: string }) => {
+  const handleCreateSession = async (config: { worker_id: string }) => {
     try {
+      const apiKey = sessionStorage.getItem('llm_api_key') || localStorage.getItem('llm_settings') || ''
       const session = await architectApi.createSession({
         llm_config: {
-          api_key: config.api_key,
-          model: config.model,
-          base_url: config.base_url,
+          api_key: apiKey,
         },
-        name: config.name,
+        worker_id: config.worker_id,
       })
       setSessionId(session.id)
       setNewSessionModalOpen(false)
