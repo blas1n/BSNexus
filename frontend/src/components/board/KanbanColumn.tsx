@@ -9,7 +9,6 @@ const columnStatusColors: Record<string, string> = {
   review: 'var(--status-review)',
   done: 'var(--status-done)',
   rejected: 'var(--status-rejected)',
-  blocked: 'var(--status-blocked)',
 }
 
 interface Props {

@@ -6,7 +6,6 @@ const statusColorMap: Record<string, string> = {
   review: 'var(--status-review)',
   done: 'var(--status-done)',
   rejected: 'var(--status-rejected)',
-  blocked: 'var(--status-blocked)',
   // Priority colors
   critical: '#EF4444',
   high: '#F97316',

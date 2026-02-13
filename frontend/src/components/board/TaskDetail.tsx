@@ -6,7 +6,6 @@ import { Modal, Badge, Button } from '../common'
 const allowedTransitions: Partial<Record<TaskStatus, { label: string; to: TaskStatus }[]>> = {
   rejected: [{ label: 'Retry', to: 'ready' }],
   ready: [{ label: 'Queue', to: 'queued' }],
-  blocked: [{ label: 'Unblock', to: 'ready' }],
 }
 
 interface Props {
