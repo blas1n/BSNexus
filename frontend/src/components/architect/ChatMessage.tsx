@@ -1,7 +1,8 @@
 import ReactMarkdown from 'react-markdown'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
-import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism'
+import { oneLight, oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import type { ChatMessage as ChatMessageType } from '../../stores/architectStore'
+import { useThemeStore } from '../../stores/themeStore'
 
 interface Props {
   message: ChatMessageType
@@ -16,6 +17,8 @@ function formatTime(dateStr: string): string {
 }
 
 export default function ChatMessage({ message }: Props) {
+  const theme = useThemeStore((s) => s.theme)
+  const isDark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
   const isAssistant = message.role === 'assistant'
 
   return (
@@ -35,7 +38,7 @@ export default function ChatMessage({ message }: Props) {
                   if (match) {
                     return (
                       <SyntaxHighlighter
-                        style={oneLight}
+                        style={isDark ? oneDark : oneLight}
                         language={match[1]}
                         PreTag="div"
                       >

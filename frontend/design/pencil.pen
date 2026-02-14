@@ -1358,13 +1358,16 @@
           "name": "mainPanel",
           "width": "fill_container",
           "height": "fill_container",
+          "layout": "none",
           "children": [
             {
               "type": "frame",
               "id": "Af1JA",
+              "x": 0,
+              "y": 0,
               "name": "sessionPanel",
               "width": 280,
-              "height": "fill_container",
+              "height": "fill_container(900)",
               "fill": "#141414",
               "stroke": {
                 "align": "inside",
@@ -1540,9 +1543,11 @@
             {
               "type": "frame",
               "id": "6bTVW",
+              "x": 280,
+              "y": 0,
               "name": "chatArea",
-              "width": "fill_container",
-              "height": "fill_container",
+              "width": "fill_container(500)",
+              "height": "fill_container(900)",
               "layout": "vertical",
               "children": [
                 {
@@ -1695,7 +1700,7 @@
                       "name": "m4",
                       "descendants": {
                         "p69mG": {
-                          "content": "Great idea! I'll add Phase 5: Admin Dashboard with inventory management, order tracking, and analytics. Shall I finalize?"
+                          "content": "Great idea! I'll include an Admin Dashboard.\n\nHere's the finalized design summary:\n- Phase 1: Authentication (JWT + OAuth)\n- Phase 2: Product Catalog (PostgreSQL)\n- Phase 3: Cart & Checkout\n- Phase 4: Payments (Stripe)\n- Phase 5: Admin Dashboard\n\nThe architecture uses Next.js frontend, FastAPI backend, PostgreSQL database, and Redis for caching."
                         }
                       }
                     }
@@ -1705,6 +1710,7 @@
                   "type": "frame",
                   "id": "5dIL9",
                   "name": "inputArea",
+                  "opacity": 0.3,
                   "width": "fill_container",
                   "stroke": {
                     "align": "inside",
@@ -1773,16 +1779,228 @@
                           "fill": "#FFFFFF"
                         }
                       ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "XhxcL",
+              "x": 780,
+              "y": 0,
+              "name": "finalizePanel",
+              "width": 400,
+              "height": "fill_container(900)",
+              "fill": "$--bg-surface",
+              "stroke": {
+                "align": "inside",
+                "thickness": {
+                  "left": 1
+                },
+                "fill": "$--border-subtle"
+              },
+              "layout": "vertical",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "YO9ea",
+                  "name": "panelHeader",
+                  "width": "fill_container",
+                  "stroke": {
+                    "align": "inside",
+                    "thickness": {
+                      "bottom": 1
+                    },
+                    "fill": "$--border-subtle"
+                  },
+                  "layout": "vertical",
+                  "gap": 4,
+                  "padding": [
+                    16,
+                    24
+                  ],
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "E59Hb",
+                      "name": "headerTitle",
+                      "fill": "$--text-primary",
+                      "content": "Design Review",
+                      "fontFamily": "Outfit",
+                      "fontSize": 16,
+                      "fontWeight": "600"
                     },
                     {
-                      "id": "Fs87A",
+                      "type": "text",
+                      "id": "BrpW2",
+                      "name": "headerDesc",
+                      "fill": "$--text-tertiary",
+                      "content": "Review the design specification and create the project.",
+                      "fontFamily": "Outfit",
+                      "fontSize": 12,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "qpIYc",
+                  "name": "panelContent",
+                  "clip": true,
+                  "width": "fill_container",
+                  "height": "fill_container",
+                  "layout": "vertical",
+                  "gap": 20,
+                  "padding": 24,
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "mlVkL",
+                      "name": "summarySection",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 8,
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "matlB",
+                          "name": "summaryTitle",
+                          "fill": "$--text-primary",
+                          "content": "Architecture Overview",
+                          "fontFamily": "Outfit",
+                          "fontSize": 14,
+                          "fontWeight": "600"
+                        },
+                        {
+                          "type": "text",
+                          "id": "QDIqH",
+                          "name": "summaryText",
+                          "fill": "$--text-secondary",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Next.js frontend, FastAPI backend, PostgreSQL database, and Redis for caching.\n\nPhase 1: Authentication (JWT + OAuth)\nPhase 2: Product Catalog\nPhase 3: Cart & Checkout\nPhase 4: Payments (Stripe)\nPhase 5: Admin Dashboard",
+                          "lineHeight": 1.5,
+                          "fontFamily": "Outfit",
+                          "fontSize": 13,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "Ma1WP",
+                      "name": "repoPathSection",
+                      "width": "fill_container",
+                      "stroke": {
+                        "align": "inside",
+                        "thickness": {
+                          "top": 1
+                        },
+                        "fill": "$--border-subtle"
+                      },
+                      "layout": "vertical",
+                      "gap": 6,
+                      "padding": [
+                        16,
+                        0,
+                        0,
+                        0
+                      ],
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "1BHBp",
+                          "name": "repoLabel",
+                          "fill": "$--text-primary",
+                          "content": "Repository Path",
+                          "fontFamily": "Outfit",
+                          "fontSize": 13,
+                          "fontWeight": "500"
+                        },
+                        {
+                          "type": "text",
+                          "id": "pE8ml",
+                          "name": "repoHint",
+                          "fill": "$--text-tertiary",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Path on the worker machine where the project will be initialized.",
+                          "fontFamily": "Outfit",
+                          "fontSize": 11,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "frame",
+                          "id": "L2Rn1",
+                          "name": "repoInput",
+                          "width": "fill_container",
+                          "fill": "$--bg-input",
+                          "cornerRadius": "$--radius-md",
+                          "stroke": {
+                            "align": "inside",
+                            "thickness": 1,
+                            "fill": "$--border"
+                          },
+                          "padding": [
+                            10,
+                            14
+                          ],
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "XoJGW",
+                              "name": "repoPlaceholder",
+                              "fill": "$--text-muted",
+                              "content": "/home/worker/projects/ecommerce",
+                              "fontFamily": "Outfit",
+                              "fontSize": 13,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "oq60N",
+                  "name": "panelFooter",
+                  "width": "fill_container",
+                  "stroke": {
+                    "align": "inside",
+                    "thickness": {
+                      "top": 1
+                    },
+                    "fill": "$--border-subtle"
+                  },
+                  "gap": 12,
+                  "padding": [
+                    16,
+                    24
+                  ],
+                  "justifyContent": "end",
+                  "children": [
+                    {
+                      "id": "TC0MD",
                       "type": "ref",
                       "ref": "NafPc",
-                      "name": "finBtn",
+                      "name": "cancelBtn",
                       "descendants": {
                         "BiHHp": {
-                          "content": "Finalize",
-                          "fill": "#D4A0AC"
+                          "content": "Cancel"
+                        }
+                      }
+                    },
+                    {
+                      "id": "AIXjV",
+                      "type": "ref",
+                      "ref": "Q96vy",
+                      "name": "confirmBtn",
+                      "descendants": {
+                        "IYseG": {
+                          "content": "Confirm & Create Project"
                         }
                       }
                     }

@@ -40,6 +40,7 @@ export interface DesignMessageResponse {
   role: MessageRole
   content: string
   created_at: string
+  finalize_ready?: boolean
 }
 
 export interface FinalizeRequest {
