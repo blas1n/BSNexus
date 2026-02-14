@@ -264,6 +264,7 @@ class DesignMessageResponse(BaseModel):
     role: MessageRole
     content: str
     created_at: datetime
+    finalize_ready: bool = False
 
 
 class DesignSessionResponse(BaseModel):

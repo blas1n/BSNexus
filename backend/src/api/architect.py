@@ -31,6 +31,47 @@ def _slugify(value: str) -> str:
     return re.sub(r"[-\s]+", "-", value).strip("-")
 
 
+FINALIZE_MARKER = "[FINALIZE]"
+_CONTEXT_RE = re.compile(r"<design_context>(.*?)</design_context>", re.DOTALL)
+
+
+def _clean_response(text: str) -> tuple[str, bool, str | None]:
+    """Strip [FINALIZE] marker and extract design_context from text.
+
+    Returns (cleaned_text, has_finalize, design_context).
+    The cleaned_text has both the marker and design_context block removed
+    so that only the user-visible portion remains.
+    """
+    has_finalize = FINALIZE_MARKER in text
+
+    # Extract design_context before stripping
+    design_context: str | None = None
+    ctx_match = _CONTEXT_RE.search(text)
+    if ctx_match:
+        design_context = ctx_match.group(1).strip()
+
+    # Strip both marker and context block from the user-visible text
+    cleaned = text.replace(FINALIZE_MARKER, "")
+    cleaned = _CONTEXT_RE.sub("", cleaned).strip()
+
+    return cleaned, has_finalize, design_context
+
+
+def _extract_design_context(session: models.DesignSession) -> str | None:
+    """Extract design_context from the last assistant chat message."""
+    chat_messages = [
+        m
+        for m in session.messages
+        if m.message_type == models.MessageType.chat
+        and m.role == models.MessageRole.assistant
+    ]
+    if not chat_messages:
+        return None
+    last = sorted(chat_messages, key=lambda m: m.created_at)[-1]
+    match = _CONTEXT_RE.search(last.content)
+    return match.group(1).strip() if match else None
+
+
 def _build_llm_config(llm_config_dict: dict[str, Any] | None) -> LLMConfig:
     """Build an LLMConfig from a dict stored in session.llm_config."""
     if not llm_config_dict or "api_key" not in llm_config_dict:
@@ -51,7 +92,9 @@ def _build_message_history(session: models.DesignSession) -> list[dict[str, str]
     history: list[dict[str, str]] = [
         {"role": "system", "content": get_prompt("architect", "system")},
     ]
-    chat_messages = [m for m in session.messages if m.message_type == models.MessageType.chat]
+    chat_messages = [
+        m for m in session.messages if m.message_type == models.MessageType.chat
+    ]
     sorted_messages = sorted(chat_messages, key=lambda m: m.created_at)
     history.extend(
         {
@@ -83,7 +126,9 @@ async def list_sessions(
             raise HTTPException(status_code=400, detail=f"Invalid status: {status}")
     sessions = await repo.list_sessions(status=status_filter)
     for s in sessions:
-        s.messages = [m for m in s.messages if m.message_type == models.MessageType.chat]
+        s.messages = [
+            m for m in s.messages if m.message_type == models.MessageType.chat
+        ]
     return [schemas.DesignSessionResponse.model_validate(s) for s in sessions]
 
 
@@ -99,7 +144,10 @@ async def create_session(
     settings = await get_raw_llm_config(db)
     api_key = settings.get("llm_api_key")
     if not api_key:
-        raise HTTPException(status_code=400, detail="LLM API key not configured. Set it in Settings first.")
+        raise HTTPException(
+            status_code=400,
+            detail="LLM API key not configured. Set it in Settings first.",
+        )
 
     llm_config_dict: dict[str, Any] = {"api_key": api_key}
     if settings.get("llm_model"):
@@ -108,7 +156,9 @@ async def create_session(
         llm_config_dict["base_url"] = settings["llm_base_url"]
 
     repo = DesignSessionRepository(db)
-    session = await repo.add(models.DesignSession(name=body.name, llm_config=llm_config_dict))
+    session = await repo.add(
+        models.DesignSession(name=body.name, llm_config=llm_config_dict)
+    )
     await repo.commit()
 
     # Reload with messages
@@ -131,7 +181,9 @@ async def get_session(
     session = await repo.get_by_id(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
-    session.messages = [m for m in session.messages if m.message_type == models.MessageType.chat]
+    session.messages = [
+        m for m in session.messages if m.message_type == models.MessageType.chat
+    ]
     return schemas.DesignSessionResponse.model_validate(session)
 
 
@@ -170,14 +222,22 @@ async def send_message(
     except LLMError as e:
         raise HTTPException(status_code=502, detail=f"LLM error: {e}") from e
 
-    # Save assistant response
+    # Detect and strip finalize marker / design_context
+    cleaned_text, has_finalize, _ = _clean_response(response_text)
+
+    # Save assistant response (original with design_context for later extraction)
     assistant_msg = await repo.add_message(
-        session.id, models.MessageRole.assistant, response_text
+        session.id,
+        models.MessageRole.assistant,
+        response_text.replace(FINALIZE_MARKER, "").strip(),
     )
     await repo.commit()
     await repo.refresh(assistant_msg)
 
-    return schemas.DesignMessageResponse.model_validate(assistant_msg)
+    response = schemas.DesignMessageResponse.model_validate(assistant_msg)
+    response.content = cleaned_text  # Strip design_context from frontend response
+    response.finalize_ready = has_finalize
+    return response
 
 
 # ── 4. SSE Streaming Message ────────────────────────────────────────
@@ -218,11 +278,20 @@ async def send_message_stream(
             yield {"event": "error", "data": str(e)}
             return
 
-        # Save assistant response
-        await repo.add_message(session.id, models.MessageRole.assistant, full_response)
+        # Detect and strip finalize marker / design_context
+        cleaned_response, has_finalize, _ = _clean_response(full_response)
+
+        # Save assistant response (with design_context preserved for finalize extraction)
+        stored_response = full_response.replace(FINALIZE_MARKER, "").strip()
+        await repo.add_message(
+            session.id, models.MessageRole.assistant, stored_response
+        )
         await repo.commit()
 
-        yield {"event": "done", "data": full_response}
+        yield {"event": "done", "data": cleaned_response}
+
+        if has_finalize:
+            yield {"event": "finalize_ready", "data": ""}
 
     return EventSourceResponse(event_generator())
 
@@ -230,9 +299,7 @@ async def send_message_stream(
 # ── 5. WebSocket Chat ────────────────────────────────────────────────
 
 
-async def architect_websocket(
-    websocket: WebSocket, session_id: uuid.UUID
-) -> None:
+async def architect_websocket(websocket: WebSocket, session_id: uuid.UUID) -> None:
     """WebSocket handler for architect chat. Registered on the app in main.py.
 
     Uses short-lived DB sessions per operation to avoid holding a connection
@@ -266,45 +333,63 @@ async def architect_websocket(
                 await websocket.send_json({"type": "error", "content": "Empty message"})
                 continue
 
-            # Save user message and reload session in a short-lived DB session
-            async with async_session() as db:
-                repo = DesignSessionRepository(db)
-                await repo.add_message(session.id, models.MessageRole.user, content)
-                await repo.commit()
-
-                # Reload session with messages to get the latest
-                reloaded = await repo.get_by_id(session_id)
-            if reloaded is None:
-                await websocket.send_json(
-                    {"type": "error", "content": "Session not found"}
-                )
-                break
-            session = reloaded
-
-            # Build message history
-            messages = _build_message_history(session)
-
-            config = _build_llm_config(session.llm_config)
-            client = LLMClient(config)
-
-            full_response = ""
             try:
-                async for chunk in client.stream_chat(messages):
-                    full_response += chunk
-                    await websocket.send_json({"type": "chunk", "content": chunk})
-            except LLMError as e:
-                await websocket.send_json({"type": "error", "content": str(e)})
-                continue
+                # Save user message and reload session in a short-lived DB session
+                async with async_session() as db:
+                    repo = DesignSessionRepository(db)
+                    await repo.add_message(session.id, models.MessageRole.user, content)
+                    await repo.commit()
 
-            # Save assistant response in a short-lived DB session
-            async with async_session() as db:
-                repo = DesignSessionRepository(db)
-                await repo.add_message(
-                    session.id, models.MessageRole.assistant, full_response
-                )
-                await repo.commit()
+                    # Reload session with messages to get the latest
+                    reloaded = await repo.get_by_id(session_id)
+                if reloaded is None:
+                    await websocket.send_json(
+                        {"type": "error", "content": "Session not found"}
+                    )
+                    break
+                session = reloaded
 
-            await websocket.send_json({"type": "done", "content": full_response})
+                # Build message history
+                messages = _build_message_history(session)
+
+                config = _build_llm_config(session.llm_config)
+                client = LLMClient(config)
+
+                full_response = ""
+                try:
+                    async for chunk in client.stream_chat(messages):
+                        full_response += chunk
+                        await websocket.send_json({"type": "chunk", "content": chunk})
+                except LLMError as e:
+                    await websocket.send_json({"type": "error", "content": str(e)})
+                    continue
+
+                # Detect and strip finalize marker / design_context
+                cleaned_response, has_finalize, _ctx = _clean_response(full_response)
+
+                # Save assistant response (with design_context preserved for finalize extraction)
+                stored_response = full_response.replace(FINALIZE_MARKER, "").strip()
+                async with async_session() as db:
+                    repo = DesignSessionRepository(db)
+                    await repo.add_message(
+                        session.id, models.MessageRole.assistant, stored_response
+                    )
+                    await repo.commit()
+
+                await websocket.send_json({"type": "done", "content": cleaned_response})
+
+                if has_finalize:
+                    await websocket.send_json({"type": "finalize_ready"})
+
+            except WebSocketDisconnect:
+                raise
+            except Exception as e:
+                try:
+                    await websocket.send_json(
+                        {"type": "error", "content": f"Internal error: {e}"}
+                    )
+                except (WebSocketDisconnect, RuntimeError):
+                    break
 
     except WebSocketDisconnect:
         pass
@@ -325,12 +410,38 @@ async def finalize_design(
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
 
+    if session.status == models.DesignSessionStatus.finalized:
+        # Already finalized — return the existing project instead of 400
+        if session.project_id:
+            project_repo = ProjectRepository(db)
+            existing_project = await project_repo.get_by_id(session.project_id)
+            if existing_project:
+                return schemas.ProjectResponse.model_validate(existing_project)
+        raise HTTPException(
+            status_code=400, detail="Session is finalized but project not found"
+        )
+
     if session.status != models.DesignSessionStatus.active:
         raise HTTPException(status_code=400, detail="Session is not active")
 
-    # Build message history and add finalize prompt
-    messages = _build_message_history(session)
-    messages.append({"role": "user", "content": get_prompt("architect", "finalize")})
+    # Extract design_context for optimized finalize (avoids sending full history)
+    design_context = _extract_design_context(session)
+
+    finalize_template = get_prompt("architect", "finalize")
+    if design_context:
+        # Use only system prompt + design_context (no full conversation history)
+        finalize_prompt = finalize_template.format(design_context=design_context)
+        messages = [
+            {"role": "system", "content": get_prompt("architect", "system")},
+            {"role": "user", "content": finalize_prompt},
+        ]
+    else:
+        # Fallback: full conversation history (legacy sessions without design_context)
+        finalize_prompt = finalize_template.format(
+            design_context="(see conversation history above)"
+        )
+        messages = _build_message_history(session)
+        messages.append({"role": "user", "content": finalize_prompt})
 
     config = _build_llm_config(session.llm_config)
     client = LLMClient(config)
@@ -347,7 +458,7 @@ async def finalize_design(
     await session_repo.add_message(
         session.id,
         models.MessageRole.user,
-        get_prompt("architect", "finalize"),
+        finalize_prompt,
         message_type=models.MessageType.internal,
     )
     await session_repo.add_message(
