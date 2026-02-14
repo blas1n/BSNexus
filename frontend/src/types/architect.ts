@@ -26,7 +26,6 @@ export interface LLMConfigInput {
 }
 
 export interface CreateSessionRequest {
-  llm_config: LLMConfigInput
   name?: string
   worker_id?: string
 }
@@ -41,6 +40,7 @@ export interface DesignMessageResponse {
   role: MessageRole
   content: string
   created_at: string
+  finalize_ready?: boolean
 }
 
 export interface FinalizeRequest {

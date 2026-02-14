@@ -5,13 +5,11 @@ import type { ChatMessage as ChatMessageType } from '../stores/architectStore'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { architectApi } from '../api/architect'
 import type { DesignSession } from '../types/architect'
-import type { Project } from '../types/project'
 import ChatMessage from '../components/architect/ChatMessage'
 import ChatInput from '../components/architect/ChatInput'
 import SessionList from '../components/architect/SessionList'
 import NewSessionModal from '../components/architect/NewSessionModal'
-import FinalizeDialog from '../components/architect/FinalizeDialog'
-import DesignPreview from '../components/architect/DesignPreview'
+import FinalizePanel from '../components/architect/FinalizePanel'
 import Header from '../components/layout/Header'
 
 export default function ArchitectPage() {
@@ -37,8 +35,9 @@ export default function ArchitectPage() {
   } = useArchitectStore()
 
   const [newSessionModalOpen, setNewSessionModalOpen] = useState(false)
-  const [showFinalizeDialog, setShowFinalizeDialog] = useState(false)
-  const [finalizedProject, setFinalizedProject] = useState<Project | null>(null)
+  const [showFinalizePanel, setShowFinalizePanel] = useState(false)
+  const [designSummary, setDesignSummary] = useState('')
+  const [finalizedProjectId, setFinalizedProjectId] = useState<string | null>(null)
 
   // Find the active session object for name display
   const activeSession = sessions.find((s) => s.id === sessionId) || null
@@ -77,12 +76,19 @@ export default function ArchitectPage() {
         }
         break
       }
+      case 'finalize_ready': {
+        const currentState = useArchitectStore.getState()
+        const lastAssistant = [...currentState.messages].reverse().find(m => m.role === 'assistant')
+        setDesignSummary(lastAssistant?.content || '')
+        setShowFinalizePanel(true)
+        break
+      }
       case 'error':
         setStreaming(false)
         addMessage({
           id: crypto.randomUUID(),
           role: 'assistant',
-          content: `Error: ${msg.message || 'Unknown error'}`,
+          content: `Error: ${msg.content || msg.message || 'Unknown error'}`,
           createdAt: new Date().toISOString(),
         })
         break
@@ -146,30 +152,31 @@ export default function ArchitectPage() {
         createdAt: m.created_at,
       }))
       setMessages(chatMessages)
+
+      // If session is already finalized, show the complete state
+      if (session.status === 'finalized' && session.project_id) {
+        setFinalizedProjectId(session.project_id)
+        setShowFinalizePanel(true)
+      } else {
+        setFinalizedProjectId(null)
+        setShowFinalizePanel(false)
+      }
     } catch {
       // Session not found
     }
   }
 
   const handleCreateSession = async (config: { worker_id: string }) => {
-    try {
-      const apiKey = sessionStorage.getItem('llm_api_key') || localStorage.getItem('llm_settings') || ''
-      const session = await architectApi.createSession({
-        llm_config: {
-          api_key: apiKey,
-        },
-        worker_id: config.worker_id,
-      })
-      setSessionId(session.id)
-      setNewSessionModalOpen(false)
-      clearMessages()
-      setSessions([session, ...sessions])
-      navigate(`/architect/${session.id}`)
-      // Load full session messages (includes system message)
-      loadSession(session.id)
-    } catch {
-      // Error creating session
-    }
+    const session = await architectApi.createSession({
+      worker_id: config.worker_id,
+    })
+    setSessionId(session.id)
+    setNewSessionModalOpen(false)
+    clearMessages()
+    setSessions([session, ...sessions])
+    navigate(`/architect/${session.id}`)
+    // Load full session messages
+    loadSession(session.id)
   }
 
   const handleSend = (content: string) => {
@@ -180,18 +187,24 @@ export default function ArchitectPage() {
       content,
       createdAt: new Date().toISOString(),
     })
-    send({ type: 'message', content })
+    const sent = send({ type: 'message', content })
+    if (!sent) {
+      addMessage({
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content: 'Error: Failed to send message. WebSocket is not connected.',
+        createdAt: new Date().toISOString(),
+      })
+    }
   }
 
   const handleFinalize = async (repoPath: string) => {
     if (!sessionId) throw new Error('No active session')
-    const apiKey = sessionStorage.getItem('llm_api_key') || ''
-    const project = await architectApi.finalize(sessionId, {
+    const result = await architectApi.finalize(sessionId, {
       repo_path: repoPath,
-      pm_llm_config: apiKey ? { api_key: apiKey } : undefined,
     })
-    setShowFinalizeDialog(false)
-    setFinalizedProject(project)
+    setFinalizedProjectId(result.id)
+    return result
   }
 
   const handleNewSession = () => {
@@ -238,19 +251,9 @@ export default function ArchitectPage() {
       <Header
         title={headerTitle}
         action={
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2">
-              <span className={`inline-block w-2 h-2 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`} />
-              <span className="text-xs text-text-secondary">{isConnected ? 'Connected' : 'Disconnected'}</span>
-            </div>
-            {messages.length > 0 && !isStreaming && (
-              <button
-                onClick={() => setShowFinalizeDialog(true)}
-                className="px-3 py-1.5 text-sm font-medium rounded-md bg-green-600 text-white hover:bg-green-700 transition-colors"
-              >
-                Finalize
-              </button>
-            )}
+          <div className="flex items-center gap-2">
+            <span className={`inline-block w-2 h-2 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`} />
+            <span className="text-xs text-text-secondary">{isConnected ? 'Connected' : 'Disconnected'}</span>
           </div>
         }
       />
@@ -264,36 +267,40 @@ export default function ArchitectPage() {
         <div className="flex-1 flex flex-col">
           {/* Messages area */}
           <div className="flex-1 overflow-y-auto p-4 space-y-2">
-            {messages.map((msg) => (
-              <ChatMessage key={msg.id} message={msg} />
-            ))}
+            {messages.length === 0 ? (
+              <div className="flex-1 flex items-center justify-center h-full">
+                <div className="text-center space-y-2">
+                  <p className="text-lg font-medium text-text-secondary">안녕하세요! BSNexus Architect입니다.</p>
+                  <p className="text-sm text-text-muted">어떤 프로젝트를 만들고 싶으신가요?</p>
+                </div>
+              </div>
+            ) : (
+              messages.map((msg) => (
+                <ChatMessage key={msg.id} message={msg} />
+              ))
+            )}
             <div ref={messagesEndRef} />
           </div>
 
-          {/* Input area */}
-          <div className="p-4 border-t border-border">
-            <ChatInput
-              onSend={handleSend}
-              disabled={isStreaming || !isConnected}
-            />
-          </div>
+          {/* Input area - hidden when finalize panel is showing */}
+          {!showFinalizePanel && (
+            <div className="p-4 border-t border-border">
+              <ChatInput
+                onSend={handleSend}
+                disabled={isStreaming || !isConnected}
+              />
+            </div>
+          )}
         </div>
 
-        {/* Design preview sidebar (when finalized) */}
-        {finalizedProject && (
-          <div className="w-80 border-l border-border overflow-y-auto p-4">
-            <DesignPreview
-              project={finalizedProject}
-              onConfirm={() => navigate(`/board/${finalizedProject.id}`)}
-            />
-          </div>
-        )}
-
-        {/* Finalize dialog */}
-        {showFinalizeDialog && (
-          <FinalizeDialog
+        {/* Finalize panel (right side) */}
+        {showFinalizePanel && (
+          <FinalizePanel
+            designSummary={designSummary}
             onConfirm={handleFinalize}
-            onCancel={() => setShowFinalizeDialog(false)}
+            onCancel={() => setShowFinalizePanel(false)}
+            onGoToBoard={(projectId) => navigate(`/board/${projectId}`)}
+            finalizedProjectId={finalizedProjectId}
           />
         )}
       </div>

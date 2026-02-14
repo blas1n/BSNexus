@@ -48,7 +48,30 @@ export default {
         lg: 'var(--radius-lg)',
         xl: 'var(--radius-xl)',
       },
+      typography: {
+        DEFAULT: {
+          css: {
+            '--tw-prose-body': 'var(--text-primary)',
+            '--tw-prose-headings': 'var(--text-primary)',
+            '--tw-prose-lead': 'var(--text-secondary)',
+            '--tw-prose-links': 'var(--accent-text)',
+            '--tw-prose-bold': 'var(--text-primary)',
+            '--tw-prose-counters': 'var(--text-secondary)',
+            '--tw-prose-bullets': 'var(--text-tertiary)',
+            '--tw-prose-hr': 'var(--border)',
+            '--tw-prose-quotes': 'var(--text-secondary)',
+            '--tw-prose-quote-borders': 'var(--border)',
+            '--tw-prose-code': 'var(--text-primary)',
+            '--tw-prose-pre-code': 'var(--text-primary)',
+            '--tw-prose-pre-bg': 'var(--bg-elevated)',
+            '--tw-prose-th-borders': 'var(--border)',
+            '--tw-prose-td-borders': 'var(--border-subtle)',
+          },
+        },
+      },
     },
   },
-  plugins: [],
+  plugins: [
+    require('@tailwindcss/typography'),
+  ],
 }

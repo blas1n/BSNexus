@@ -80,7 +80,7 @@ class TestWorkerAgentRegister:
             await agent.register()
 
         call_args = mock_client.post.call_args
-        assert "/api/workers/register" in call_args[0][0]
+        assert "/api/v1/workers/register" in call_args[0][0]
         payload = call_args[1]["json"]
         assert payload["platform"] in ("linux", "windows", "darwin")
         assert payload["executor_type"] == "claude-code"

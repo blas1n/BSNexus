@@ -5,7 +5,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-from backend.src.models import DesignMessage, DesignSession, DesignSessionStatus, MessageRole
+from backend.src.models import DesignMessage, DesignSession, DesignSessionStatus, MessageRole, MessageType
 from backend.src.repositories.base import BaseRepository
 
 
@@ -35,9 +35,15 @@ class DesignSessionRepository(BaseRepository):
         result = await self.db.execute(query)
         return list(result.scalars().all())
 
-    async def add_message(self, session_id: uuid.UUID, role: MessageRole, content: str) -> DesignMessage:
+    async def add_message(
+        self,
+        session_id: uuid.UUID,
+        role: MessageRole,
+        content: str,
+        message_type: MessageType = MessageType.chat,
+    ) -> DesignMessage:
         """Add a message to a session."""
-        msg = DesignMessage(session_id=session_id, role=role, content=content)
+        msg = DesignMessage(session_id=session_id, role=role, content=content, message_type=message_type)
         self.db.add(msg)
         await self.db.flush()
         return msg

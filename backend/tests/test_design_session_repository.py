@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from backend.src.models import DesignMessage, DesignSession, DesignSessionStatus, MessageRole
+from backend.src.models import DesignMessage, DesignSession, DesignSessionStatus, MessageRole, MessageType
 from backend.src.repositories.design_session_repository import DesignSessionRepository
 
 
@@ -115,6 +115,38 @@ class TestAddMessage:
         loaded = await repo.get_by_id(session.id)
         assert loaded is not None
         assert len(loaded.messages) == 3
+
+    async def test_add_message_with_message_type(self, db_session):
+        """Adds messages with explicit message_type and verifies persistence."""
+        session = await _create_session(db_session)
+        await db_session.commit()
+
+        repo = DesignSessionRepository(db_session)
+        chat_msg = await repo.add_message(session.id, MessageRole.user, "Hello", message_type=MessageType.chat)
+        internal_msg = await repo.add_message(
+            session.id, MessageRole.user, "finalize prompt", message_type=MessageType.internal
+        )
+        await repo.commit()
+
+        assert chat_msg.message_type == MessageType.chat
+        assert internal_msg.message_type == MessageType.internal
+
+        loaded = await repo.get_by_id(session.id)
+        assert loaded is not None
+        assert len(loaded.messages) == 2
+        types = {m.message_type for m in loaded.messages}
+        assert types == {MessageType.chat, MessageType.internal}
+
+    async def test_add_message_default_type_is_chat(self, db_session):
+        """add_message defaults to MessageType.chat when message_type is not specified."""
+        session = await _create_session(db_session)
+        await db_session.commit()
+
+        repo = DesignSessionRepository(db_session)
+        msg = await repo.add_message(session.id, MessageRole.user, "Hello")
+        await repo.commit()
+
+        assert msg.message_type == MessageType.chat
 
 
 class TestAddAndCommit:

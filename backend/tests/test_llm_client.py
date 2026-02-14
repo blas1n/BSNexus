@@ -9,6 +9,7 @@ from backend.src.core.llm_client import (
     LLMClient,
     LLMConfig,
     LLMError,
+    _is_retryable,
     create_llm_client,
     create_llm_client_from_project,
 )
@@ -233,17 +234,24 @@ class TestLLMClientStructuredOutput:
     def client(self, config: LLMConfig) -> LLMClient:
         return LLMClient(config)
 
-    async def test_structured_output_returns_parsed_json(self, client: LLMClient) -> None:
-        """structured_output() should parse JSON from the response content."""
-        mock_response = MagicMock()
-        mock_choice = MagicMock()
-        mock_choice.message.content = '{"tasks": [{"title": "Task 1"}], "count": 1}'
-        mock_response.choices = [mock_choice]
+    @staticmethod
+    def _make_stream(text: str):
+        """Create an async generator that yields streaming chunks for the given text."""
+        async def stream():
+            for char in text:
+                chunk = MagicMock()
+                chunk.choices = [MagicMock()]
+                chunk.choices[0].delta.content = char
+                yield chunk
+        return stream()
 
+    async def test_structured_output_returns_parsed_json(self, client: LLMClient) -> None:
+        """structured_output() should parse JSON from the streamed response."""
+        json_text = '{"tasks": [{"title": "Task 1"}], "count": 1}'
         response_format = {"type": "json_object"}
 
         with patch("backend.src.core.llm_client.litellm.acompletion", new_callable=AsyncMock) as mock_acompletion:
-            mock_acompletion.return_value = mock_response
+            mock_acompletion.return_value = self._make_stream(json_text)
             result = await client.structured_output(
                 messages=[{"role": "user", "content": "Decompose"}],
                 response_format=response_format,
@@ -252,17 +260,14 @@ class TestLLMClientStructuredOutput:
         assert result == {"tasks": [{"title": "Task 1"}], "count": 1}
         call_kwargs = mock_acompletion.call_args[1]
         assert call_kwargs["temperature"] == 0.3
+        assert call_kwargs["max_tokens"] == 16384
         assert call_kwargs["response_format"] == response_format
+        assert call_kwargs["stream"] is True
 
     async def test_structured_output_raises_on_invalid_json(self, client: LLMClient) -> None:
         """structured_output() should raise LLMError when response is not valid JSON."""
-        mock_response = MagicMock()
-        mock_choice = MagicMock()
-        mock_choice.message.content = "not valid json {{"
-        mock_response.choices = [mock_choice]
-
         with patch("backend.src.core.llm_client.litellm.acompletion", new_callable=AsyncMock) as mock_acompletion:
-            mock_acompletion.return_value = mock_response
+            mock_acompletion.return_value = self._make_stream("not valid json {{")
 
             with pytest.raises(LLMError, match="Failed to parse structured output as JSON"):
                 await client.structured_output(
@@ -280,6 +285,26 @@ class TestLLMClientStructuredOutput:
                     messages=[{"role": "user", "content": "Test"}],
                     response_format={"type": "json_object"},
                 )
+
+    async def test_structured_output_raises_on_mid_stream_error(self, client: LLMClient) -> None:
+        """structured_output() should raise LLMError without retry on mid-stream errors."""
+        async def broken_stream():
+            chunk = MagicMock()
+            chunk.choices = [MagicMock()]
+            chunk.choices[0].delta.content = '{"partial'
+            yield chunk
+            raise RuntimeError("Stream broken")
+
+        with patch("backend.src.core.llm_client.litellm.acompletion", new_callable=AsyncMock) as mock_acompletion:
+            mock_acompletion.return_value = broken_stream()
+
+            with pytest.raises(LLMError, match="mid-stream"):
+                await client.structured_output(
+                    messages=[{"role": "user", "content": "Test"}],
+                    response_format={"type": "json_object"},
+                )
+
+        assert mock_acompletion.call_count == 1
 
 
 # -- create_llm_client ---------------------------------------------------------
@@ -433,3 +458,176 @@ class TestLLMError:
     def test_llm_error_is_exception(self) -> None:
         """LLMError should be a subclass of Exception."""
         assert issubclass(LLMError, Exception)
+
+    def test_llm_error_retryable_flag(self) -> None:
+        """LLMError should support retryable flag."""
+        error = LLMError("Overloaded", retryable=True)
+        assert error.retryable is True
+
+        error2 = LLMError("Bad request", retryable=False)
+        assert error2.retryable is False
+
+        error3 = LLMError("Default")
+        assert error3.retryable is False
+
+
+# -- _is_retryable ---------------------------------------------------------------
+
+
+class TestIsRetryable:
+    def test_overloaded_is_retryable(self) -> None:
+        assert _is_retryable(Exception("AnthropicError - Overloaded")) is True
+
+    def test_rate_limit_is_retryable(self) -> None:
+        assert _is_retryable(Exception("rate_limit_error")) is True
+
+    def test_timeout_is_retryable(self) -> None:
+        assert _is_retryable(Exception("Request timeout")) is True
+
+    def test_503_is_retryable(self) -> None:
+        assert _is_retryable(Exception("ServiceUnavailableError 503")) is True
+
+    def test_529_is_retryable(self) -> None:
+        assert _is_retryable(Exception("529 overloaded")) is True
+
+    def test_429_is_retryable(self) -> None:
+        assert _is_retryable(Exception("429 too many requests")) is True
+
+    def test_auth_error_not_retryable(self) -> None:
+        assert _is_retryable(Exception("AuthenticationError: invalid API key")) is False
+
+    def test_generic_error_not_retryable(self) -> None:
+        assert _is_retryable(Exception("Model not found")) is False
+
+
+# -- Retry tests ------------------------------------------------------------------
+
+
+class TestChatRetry:
+    @pytest.fixture
+    def client(self) -> LLMClient:
+        return LLMClient(LLMConfig(api_key="sk-test", model="gpt-4o"))
+
+    @patch("backend.src.core.llm_client.asyncio.sleep", new_callable=AsyncMock)
+    async def test_chat_retries_on_overloaded(self, mock_sleep: AsyncMock, client: LLMClient) -> None:
+        """chat() should retry on transient errors and succeed."""
+        ok_response = MagicMock()
+        ok_response.choices = [MagicMock()]
+        ok_response.choices[0].message.content = "Success"
+
+        with patch("backend.src.core.llm_client.litellm.acompletion", new_callable=AsyncMock) as mock_ac:
+            mock_ac.side_effect = [
+                Exception("AnthropicError - Overloaded"),
+                ok_response,
+            ]
+            result = await client.chat(messages=[{"role": "user", "content": "Hi"}])
+
+        assert result == "Success"
+        assert mock_ac.call_count == 2
+        mock_sleep.assert_called_once()
+
+    @patch("backend.src.core.llm_client.asyncio.sleep", new_callable=AsyncMock)
+    async def test_chat_no_retry_on_auth_error(self, mock_sleep: AsyncMock, client: LLMClient) -> None:
+        """chat() should NOT retry on non-transient errors."""
+        with patch("backend.src.core.llm_client.litellm.acompletion", new_callable=AsyncMock) as mock_ac:
+            mock_ac.side_effect = Exception("AuthenticationError: invalid API key")
+
+            with pytest.raises(LLMError, match="LLM chat failed"):
+                await client.chat(messages=[{"role": "user", "content": "Hi"}])
+
+        assert mock_ac.call_count == 1
+        mock_sleep.assert_not_called()
+
+    @patch("backend.src.core.llm_client.asyncio.sleep", new_callable=AsyncMock)
+    async def test_chat_exhausts_retries(self, mock_sleep: AsyncMock, client: LLMClient) -> None:
+        """chat() should raise after exhausting retries."""
+        with patch("backend.src.core.llm_client.litellm.acompletion", new_callable=AsyncMock) as mock_ac:
+            mock_ac.side_effect = Exception("503 Service Unavailable")
+
+            with pytest.raises(LLMError, match="LLM chat failed"):
+                await client.chat(messages=[{"role": "user", "content": "Hi"}])
+
+        assert mock_ac.call_count == 4  # 1 initial + 3 retries
+
+
+class TestStreamChatRetry:
+    @pytest.fixture
+    def client(self) -> LLMClient:
+        return LLMClient(LLMConfig(api_key="sk-test", model="gpt-4o"))
+
+    @patch("backend.src.core.llm_client.asyncio.sleep", new_callable=AsyncMock)
+    async def test_stream_retries_on_initial_overloaded(self, mock_sleep: AsyncMock, client: LLMClient) -> None:
+        """stream_chat() should retry when error occurs before any chunks are yielded."""
+        chunk = MagicMock()
+        chunk.choices = [MagicMock()]
+        chunk.choices[0].delta.content = "Hello"
+
+        async def mock_stream():
+            yield chunk
+
+        with patch("backend.src.core.llm_client.litellm.acompletion", new_callable=AsyncMock) as mock_ac:
+            mock_ac.side_effect = [
+                Exception("AnthropicError - Overloaded"),
+                mock_stream(),
+            ]
+
+            chunks: list[str] = []
+            async for content in client.stream_chat(messages=[{"role": "user", "content": "Hi"}]):
+                chunks.append(content)
+
+        assert chunks == ["Hello"]
+        assert mock_ac.call_count == 2
+        mock_sleep.assert_called_once()
+
+    @patch("backend.src.core.llm_client.asyncio.sleep", new_callable=AsyncMock)
+    async def test_stream_no_retry_after_chunks_yielded(self, mock_sleep: AsyncMock, client: LLMClient) -> None:
+        """stream_chat() should NOT retry when error occurs mid-stream."""
+        chunk = MagicMock()
+        chunk.choices = [MagicMock()]
+        chunk.choices[0].delta.content = "Partial"
+
+        async def mock_stream():
+            yield chunk
+            raise Exception("AnthropicError - Overloaded")
+
+        with patch("backend.src.core.llm_client.litellm.acompletion", new_callable=AsyncMock) as mock_ac:
+            mock_ac.return_value = mock_stream()
+
+            with pytest.raises(LLMError, match="mid-stream"):
+                async for _ in client.stream_chat(messages=[{"role": "user", "content": "Hi"}]):
+                    pass
+
+        assert mock_ac.call_count == 1
+
+
+class TestStructuredOutputRetry:
+    @pytest.fixture
+    def client(self) -> LLMClient:
+        return LLMClient(LLMConfig(api_key="sk-test", model="gpt-4o"))
+
+    @staticmethod
+    def _make_stream(text: str):
+        async def stream():
+            for char in text:
+                chunk = MagicMock()
+                chunk.choices = [MagicMock()]
+                chunk.choices[0].delta.content = char
+                yield chunk
+        return stream()
+
+    @patch("backend.src.core.llm_client.asyncio.sleep", new_callable=AsyncMock)
+    async def test_structured_output_retries_on_overloaded(self, mock_sleep: AsyncMock, client: LLMClient) -> None:
+        """structured_output() should retry on transient errors before streaming starts."""
+        with patch("backend.src.core.llm_client.litellm.acompletion", new_callable=AsyncMock) as mock_ac:
+            mock_ac.side_effect = [
+                Exception("529 Overloaded"),
+                self._make_stream('{"result": "ok"}'),
+            ]
+            result = await client.structured_output(
+                messages=[{"role": "user", "content": "Test"}],
+                response_format={"type": "json_object"},
+            )
+
+        assert result == {"result": "ok"}
+        assert mock_ac.call_count == 2
+        mock_sleep.assert_called_once()

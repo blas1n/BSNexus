@@ -72,6 +72,11 @@ class MessageRole(str, enum.Enum):
     assistant = "assistant"
 
 
+class MessageType(str, enum.Enum):
+    chat = "chat"
+    internal = "internal"
+
+
 # ── Association Table ──────────────────────────────────────────────────
 
 task_dependencies = Table(
@@ -245,6 +250,9 @@ class DesignMessage(Base):
     )
     role: Mapped[MessageRole] = mapped_column(Enum(MessageRole), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    message_type: Mapped[MessageType] = mapped_column(
+        Enum(MessageType), nullable=False, default=MessageType.chat, server_default="chat"
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     # Relationships

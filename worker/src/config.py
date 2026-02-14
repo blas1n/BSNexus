@@ -10,4 +10,8 @@ class WorkerConfig(BaseSettings):
     duration: int | None = None  # None=infinite, seconds
     registration_token: str | None = None
 
-    model_config = SettingsConfigDict(env_prefix="BSNEXUS_", env_file=".env")
+    # Saved after register (like gitlab-runner config.toml)
+    worker_id: str | None = None
+    worker_token: str | None = None
+
+    model_config = SettingsConfigDict(env_prefix="BSNEXUS_", env_file=".env", extra="ignore")

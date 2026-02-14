@@ -249,8 +249,8 @@ class LLMConfigInput(BaseModel):
 
 
 class CreateSessionRequest(BaseModel):
-    llm_config: LLMConfigInput
     name: Optional[str] = None
+    worker_id: Optional[str] = None
 
 
 class MessageRequest(BaseModel):
@@ -264,6 +264,7 @@ class DesignMessageResponse(BaseModel):
     role: MessageRole
     content: str
     created_at: datetime
+    finalize_ready: bool = False
 
 
 class DesignSessionResponse(BaseModel):
