@@ -22,7 +22,7 @@ class WorkerAgent:
         name = self.config.worker_name or f"worker-{platform.system().lower()}-{socket.gethostname()}"
         capabilities = self._detect_capabilities()
 
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
                 f"{self.config.server_url}/api/v1/workers/register",
                 json={

@@ -10,7 +10,7 @@ from worker.src.config import WorkerConfig
 from worker.src.consumer import TaskConsumer
 from worker.src.executor import create_executor
 
-CONFIG_FILE = Path("worker/.env")
+CONFIG_FILE = Path(__file__).resolve().parent.parent / ".env"
 
 
 def _save_credentials(config: WorkerConfig, agent: WorkerAgent) -> None:
