@@ -91,6 +91,36 @@ class TestClaudeCodeExecutorExecute:
         assert "Do something" in call_args
         assert mock_exec.call_args[1]["cwd"] == "/my/workspace"
 
+    async def test_execute_workspace_dir_override_from_context(self) -> None:
+        """execute() should use workspace_dir from context if provided."""
+        executor = ClaudeCodeExecutor(workspace_dir="/default/workspace")
+
+        mock_process = AsyncMock()
+        mock_process.returncode = 0
+        mock_process.communicate = AsyncMock(return_value=(b"ok", b""))
+
+        with patch(
+            "worker.src.executors.claude_code.asyncio.create_subprocess_exec", return_value=mock_process
+        ) as mock_exec:
+            await executor.execute("Do something", {"task_id": "t5", "workspace_dir": "/override/path"})
+
+        assert mock_exec.call_args[1]["cwd"] == "/override/path"
+
+    async def test_execute_uses_default_when_no_context_override(self) -> None:
+        """execute() should use self.workspace_dir when context has no override."""
+        executor = ClaudeCodeExecutor(workspace_dir="/default/workspace")
+
+        mock_process = AsyncMock()
+        mock_process.returncode = 0
+        mock_process.communicate = AsyncMock(return_value=(b"ok", b""))
+
+        with patch(
+            "worker.src.executors.claude_code.asyncio.create_subprocess_exec", return_value=mock_process
+        ) as mock_exec:
+            await executor.execute("Do something", {"task_id": "t6"})
+
+        assert mock_exec.call_args[1]["cwd"] == "/default/workspace"
+
 
 class TestClaudeCodeExecutorReview:
     async def test_review_pass(self) -> None:

@@ -525,6 +525,7 @@ async def finalize_design(
                 priority=priority,
                 worker_prompt={"prompt": task_data.get("worker_prompt", "")},
                 qa_prompt={"prompt": task_data.get("qa_prompt", "")},
+                branch_name=branch_name,
             )
             db.add(task)
             await db.flush()

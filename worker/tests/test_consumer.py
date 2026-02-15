@@ -1,5 +1,5 @@
 import json
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -68,7 +68,8 @@ class TestProcessTask:
         )
 
         data = {"task_id": "task-1", "worker_prompt": json.dumps({"prompt": "Write code"})}
-        await consumer._process_task("msg-id-1", data)
+        with patch("worker.src.consumer.WorkerGitOps"):
+            await consumer._process_task("msg-id-1", data)
 
         mock_executor.execute.assert_called_once_with("Write code", {"task_id": "task-1"})
         mock_redis.xadd.assert_called_once()
@@ -113,7 +114,8 @@ class TestProcessTask:
         mock_executor.execute.return_value = ExecutionResult(success=True)
 
         data = {"task_id": "task-4", "worker_prompt": "prompt"}
-        await consumer._process_task("msg-id-4", data)
+        with patch("worker.src.consumer.WorkerGitOps"):
+            await consumer._process_task("msg-id-4", data)
 
         mock_redis.xack.assert_called_once_with("tasks:queue", "workers", "msg-id-4")
 
@@ -124,7 +126,8 @@ class TestProcessTask:
         mock_executor.execute.return_value = ExecutionResult(success=True)
 
         data = {"task_id": b"task-bytes", "worker_prompt": b'{"prompt": "do stuff"}'}
-        await consumer._process_task("msg-id-5", data)
+        with patch("worker.src.consumer.WorkerGitOps"):
+            await consumer._process_task("msg-id-5", data)
 
         mock_executor.execute.assert_called_once_with("do stuff", {"task_id": "task-bytes"})
 
@@ -135,9 +138,157 @@ class TestProcessTask:
         mock_executor.execute.return_value = ExecutionResult(success=True)
 
         data = {"task_id": "task-6", "worker_prompt": "plain text prompt"}
-        await consumer._process_task("msg-id-6", data)
+        with patch("worker.src.consumer.WorkerGitOps"):
+            await consumer._process_task("msg-id-6", data)
 
         mock_executor.execute.assert_called_once_with("plain text prompt", {"task_id": "task-6"})
+
+    async def test_process_task_with_repo_path_initializes_git(
+        self, consumer: TaskConsumer, mock_executor: AsyncMock, mock_redis: AsyncMock
+    ) -> None:
+        """_process_task() should init git repo and set workspace_dir when repo_path is provided."""
+        mock_executor.execute.return_value = ExecutionResult(success=True)
+
+        data = {
+            "task_id": "task-git",
+            "worker_prompt": json.dumps({"prompt": "code"}),
+            "repo_path": "/home/worker/project",
+            "branch_name": "phase/auth",
+            "title": "Add login",
+        }
+
+        with patch("worker.src.consumer.WorkerGitOps") as MockGitOps:
+            mock_git = AsyncMock()
+            mock_git.commit_task = AsyncMock(return_value="abc123hash")
+            MockGitOps.return_value = mock_git
+
+            await consumer._process_task("msg-git", data)
+
+        MockGitOps.assert_called_once_with("/home/worker/project")
+        mock_git.ensure_repo.assert_awaited_once()
+        mock_git.ensure_branch.assert_awaited_once_with("phase/auth")
+        mock_executor.execute.assert_called_once_with(
+            "code", {"task_id": "task-git", "workspace_dir": "/home/worker/project"}
+        )
+        mock_git.commit_task.assert_awaited_once_with("task-git", "Add login", "phase/auth")
+
+        # Verify commit_hash is in the published result
+        call_args = mock_redis.xadd.call_args
+        published_data = call_args[0][1]
+        assert published_data["commit_hash"] == "abc123hash"
+        assert published_data["branch_name"] == "phase/auth"
+
+    async def test_process_task_git_commit_failure_does_not_fail_task(
+        self, consumer: TaskConsumer, mock_executor: AsyncMock, mock_redis: AsyncMock
+    ) -> None:
+        """Git commit failure should not cause the task to fail."""
+        mock_executor.execute.return_value = ExecutionResult(success=True)
+
+        data = {
+            "task_id": "task-gitfail",
+            "worker_prompt": json.dumps({"prompt": "code"}),
+            "repo_path": "/repo",
+            "branch_name": "phase/test",
+            "title": "Test",
+        }
+
+        with patch("worker.src.consumer.WorkerGitOps") as MockGitOps:
+            mock_git = AsyncMock()
+            mock_git.commit_task = AsyncMock(side_effect=RuntimeError("git failed"))
+            MockGitOps.return_value = mock_git
+
+            await consumer._process_task("msg-gitfail", data)
+
+        call_args = mock_redis.xadd.call_args
+        published_data = call_args[0][1]
+        assert published_data["success"] == "true"
+        assert published_data["commit_hash"] == ""
+
+    async def test_process_task_no_commit_on_failure(
+        self, consumer: TaskConsumer, mock_executor: AsyncMock, mock_redis: AsyncMock
+    ) -> None:
+        """Should not attempt git commit when execution fails."""
+        mock_executor.execute.return_value = ExecutionResult(success=False, error_message="compile error")
+
+        data = {
+            "task_id": "task-nocommit",
+            "worker_prompt": json.dumps({"prompt": "code"}),
+            "repo_path": "/repo",
+            "branch_name": "phase/test",
+            "title": "Test",
+        }
+
+        with patch("worker.src.consumer.WorkerGitOps") as MockGitOps:
+            mock_git = AsyncMock()
+            MockGitOps.return_value = mock_git
+
+            await consumer._process_task("msg-nocommit", data)
+
+        mock_git.commit_task.assert_not_awaited()
+
+
+class TestProcessRevert:
+    async def test_process_revert_calls_git_revert(
+        self, consumer: TaskConsumer, mock_redis: AsyncMock
+    ) -> None:
+        """_process_revert() should call WorkerGitOps.revert_task."""
+        data = {
+            "type": "revert",
+            "task_id": "task-rev",
+            "repo_path": "/repo/path",
+            "commit_hash": "abc123",
+            "branch_name": "phase/auth",
+        }
+
+        with patch("worker.src.consumer.WorkerGitOps") as MockGitOps:
+            mock_git = AsyncMock()
+            MockGitOps.return_value = mock_git
+
+            await consumer._process_task("msg-rev", data)
+
+        MockGitOps.assert_called_once_with("/repo/path")
+        mock_git.revert_task.assert_awaited_once_with("abc123", "phase/auth")
+        mock_redis.xack.assert_called_once()
+
+    async def test_process_revert_handles_failure_gracefully(
+        self, consumer: TaskConsumer, mock_redis: AsyncMock
+    ) -> None:
+        """_process_revert() should not raise on git failure."""
+        data = {
+            "type": "revert",
+            "task_id": "task-rev-fail",
+            "repo_path": "/repo/path",
+            "commit_hash": "abc123",
+            "branch_name": "phase/auth",
+        }
+
+        with patch("worker.src.consumer.WorkerGitOps") as MockGitOps:
+            mock_git = AsyncMock()
+            mock_git.revert_task = AsyncMock(side_effect=RuntimeError("revert failed"))
+            MockGitOps.return_value = mock_git
+
+            await consumer._process_task("msg-rev-fail", data)
+
+        # Should still XACK
+        mock_redis.xack.assert_called_once()
+
+    async def test_process_revert_skips_when_missing_fields(
+        self, consumer: TaskConsumer, mock_redis: AsyncMock
+    ) -> None:
+        """_process_revert() should skip revert when required fields are missing."""
+        data = {
+            "type": "revert",
+            "task_id": "task-rev-skip",
+            "repo_path": "",
+            "commit_hash": "",
+            "branch_name": "",
+        }
+
+        with patch("worker.src.consumer.WorkerGitOps") as MockGitOps:
+            await consumer._process_task("msg-rev-skip", data)
+
+        MockGitOps.assert_not_called()
+        mock_redis.xack.assert_called_once()
 
 
 class TestProcessQA:
@@ -210,3 +361,20 @@ class TestProcessQA:
         await consumer._process_qa("msg-id-qa-5", data)
 
         mock_executor.review.assert_called_once_with("review stuff", {"task_id": "qa-bytes"})
+
+    async def test_process_qa_with_repo_path_sets_workspace_dir(
+        self, consumer: TaskConsumer, mock_executor: AsyncMock, mock_redis: AsyncMock
+    ) -> None:
+        """_process_qa() should pass workspace_dir in context when repo_path is provided."""
+        mock_executor.review.return_value = ReviewResult(passed=True, feedback="OK")
+
+        data = {
+            "task_id": "qa-repo",
+            "qa_prompt": json.dumps({"prompt": "review"}),
+            "repo_path": "/home/worker/project",
+        }
+        await consumer._process_qa("msg-qa-repo", data)
+
+        mock_executor.review.assert_called_once_with(
+            "review", {"task_id": "qa-repo", "workspace_dir": "/home/worker/project"}
+        )

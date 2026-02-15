@@ -6,7 +6,6 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
-    from backend.src.core.git_ops import GitOps
     from backend.src.core.prompt_security import PromptSigner
     from backend.src.utils.worker_registry import WorkerRegistry
 
@@ -33,11 +32,9 @@ class TaskStateMachine:
 
     def __init__(
         self,
-        git_ops: GitOps | None = None,
         prompt_signer: PromptSigner | None = None,
         worker_registry: WorkerRegistry | None = None,
     ) -> None:
-        self.git_ops = git_ops
         self.prompt_signer = prompt_signer
         self.worker_registry = worker_registry
 
@@ -153,11 +150,22 @@ class TaskStateMachine:
                 "priority": task.priority.value,
                 "title": task.title,
             }
-            if self.prompt_signer and task.worker_prompt:
+            # Include git metadata for workers
+            if task.branch_name:
+                message["branch_name"] = task.branch_name
+            if db_session is not None:
+                repo_path = await self._get_repo_path(task, db_session)
+                if repo_path:
+                    message["repo_path"] = repo_path
+            # Include worker prompt
+            if task.worker_prompt:
                 prompt_text = (
                     task.worker_prompt if isinstance(task.worker_prompt, str) else json.dumps(task.worker_prompt)
                 )
-                message["signed_worker_prompt"] = self.prompt_signer.sign(prompt_text)
+                if self.prompt_signer:
+                    message["signed_worker_prompt"] = self.prompt_signer.sign(prompt_text)
+                else:
+                    message["worker_prompt"] = prompt_text
             await stream_manager.publish("tasks:queue", message)
 
     async def _on_in_progress(
@@ -200,9 +208,19 @@ class TaskStateMachine:
                 "project_id": str(task.project_id),
                 "title": task.title,
             }
+            # Include git metadata for QA reviewers
+            if task.branch_name:
+                message["branch_name"] = task.branch_name
+            if db_session is not None:
+                repo_path = await self._get_repo_path(task, db_session)
+                if repo_path:
+                    message["repo_path"] = repo_path
             if self.prompt_signer and task.qa_prompt:
                 prompt_text = task.qa_prompt if isinstance(task.qa_prompt, str) else json.dumps(task.qa_prompt)
                 message["signed_qa_prompt"] = self.prompt_signer.sign(prompt_text)
+            elif task.qa_prompt:
+                prompt_text = task.qa_prompt if isinstance(task.qa_prompt, str) else json.dumps(task.qa_prompt)
+                message["qa_prompt"] = prompt_text
             await stream_manager.publish("tasks:qa", message)
 
         if self.worker_registry and task.worker_id:
@@ -220,16 +238,11 @@ class TaskStateMachine:
         stream_manager: Optional[RedisStreamManager] = None,
         **kwargs: Any,
     ) -> None:
-        """Set completed_at, commit via GitOps, and promote dependent tasks."""
+        """Set completed_at and promote dependent tasks.
+
+        Note: commit_hash is set by the orchestrator from worker result messages.
+        """
         task.completed_at = datetime.now(timezone.utc)
-        if self.git_ops and task.branch_name:
-            try:
-                commit_hash = await self.git_ops.commit_task(
-                    str(task.id), task.title, task.branch_name
-                )
-                task.commit_hash = commit_hash
-            except RuntimeError:
-                pass  # Git failure should not block task completion
         if db_session is not None:
             repo = TaskRepository(db_session)
             await self._promote_dependents(task, repo, db_session)
@@ -249,16 +262,24 @@ class TaskStateMachine:
         stream_manager: Optional[RedisStreamManager] = None,
         **kwargs: Any,
     ) -> None:
-        """Set error_message from the rejection reason, and revert GitOps commit if present."""
+        """Set error_message and publish revert request to workers if commit exists."""
         reason = kwargs.get("reason")
         if reason is not None:
             task.error_message = reason
-        if self.git_ops and task.commit_hash:
-            try:
-                await self.git_ops.revert_task(task.commit_hash)
-                task.commit_hash = None
-            except RuntimeError:
-                pass  # Git failure should not block rejection
+        # Publish revert request to workers if there's a commit to revert
+        if stream_manager and task.commit_hash and task.branch_name:
+            repo_path = ""
+            if db_session is not None:
+                repo_path = await self._get_repo_path(task, db_session)
+            await stream_manager.publish("tasks:queue", {
+                "type": "revert",
+                "task_id": str(task.id),
+                "project_id": str(task.project_id),
+                "commit_hash": task.commit_hash,
+                "branch_name": task.branch_name,
+                "repo_path": repo_path,
+            })
+            task.commit_hash = None
         if db_session is not None:
             repo = TaskRepository(db_session)
             await self._block_dependents(task, repo, db_session)
@@ -273,6 +294,14 @@ class TaskStateMachine:
         **kwargs: Any,
     ) -> None:
         """No-op: blocked tasks wait until blocker is resolved."""
+
+    async def _get_repo_path(self, task: Task, db_session: AsyncSession) -> str:
+        """Look up repo_path from the task's project."""
+        from backend.src.repositories.project_repository import ProjectRepository
+
+        project_repo = ProjectRepository(db_session)
+        project = await project_repo.get_by_id(task.project_id, load_phases=False)
+        return project.repo_path if project else ""
 
     async def _block_dependents(self, task: Task, repo: TaskRepository, db_session: AsyncSession) -> list[Task]:
         """Transition WAITING dependents to BLOCKED when a task is rejected."""

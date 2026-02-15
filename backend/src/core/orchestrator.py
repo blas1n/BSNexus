@@ -128,6 +128,11 @@ class PMOrchestrator:
         if not task:
             return
 
+        # Store commit_hash from worker if provided
+        commit_hash = result.get("commit_hash", "")
+        if commit_hash:
+            task.commit_hash = commit_hash
+
         worker_id = result.get("worker_id", "")
 
         if result_type == "execution":

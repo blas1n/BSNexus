@@ -14,6 +14,7 @@ class ClaudeCodeExecutor(BaseExecutor):
     async def execute(self, prompt: str, context: dict) -> ExecutionResult:
         """Execute coding task via Claude Code CLI"""
         task_id = context.get("task_id", "unknown")
+        workspace = context.get("workspace_dir", self.workspace_dir)
 
         with tempfile.NamedTemporaryFile(
             mode="w",
@@ -31,7 +32,7 @@ class ClaudeCodeExecutor(BaseExecutor):
                 "--dangerously-skip-permissions",
                 "-p",
                 prompt,
-                cwd=self.workspace_dir,
+                cwd=workspace,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
