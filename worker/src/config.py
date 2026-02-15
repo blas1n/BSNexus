@@ -1,3 +1,4 @@
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -15,3 +16,10 @@ class WorkerConfig(BaseSettings):
     worker_token: str | None = None
 
     model_config = SettingsConfigDict(env_prefix="BSNEXUS_", env_file=".env", extra="ignore")
+
+    @field_validator("duration", "heartbeat_interval", mode="before")
+    @classmethod
+    def empty_str_to_none(cls, v: object) -> object:
+        if isinstance(v, str) and v.strip() == "":
+            return None
+        return v

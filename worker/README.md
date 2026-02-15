@@ -7,6 +7,7 @@ Works like GitLab Runner: register once, run anytime.
 
 ```bash
 cd worker
+source /workspace/.venv/bin/activate   # activate the virtual environment
 uv pip install -e ".[dev]"
 ```
 
@@ -60,17 +61,17 @@ bsnexus-worker run \
 
 Environment variables (prefix `BSNEXUS_`):
 
-| Variable | Description | Default |
-|----------|-----------|---------|
-| `BSNEXUS_SERVER_URL` | Backend API URL | `http://localhost:8000` |
-| `BSNEXUS_REDIS_URL` | Redis connection URL | `redis://localhost:6379` |
-| `BSNEXUS_REGISTRATION_TOKEN` | Registration token | — |
-| `BSNEXUS_WORKER_NAME` | Worker display name | auto-generated |
-| `BSNEXUS_EXECUTOR_TYPE` | Executor type | `claude-code` |
-| `BSNEXUS_HEARTBEAT_INTERVAL` | Heartbeat interval (seconds) | `30` |
-| `BSNEXUS_DURATION` | Max run time (seconds) | infinite |
-| `BSNEXUS_WORKER_ID` | Worker ID (auto-saved by `register`) | — |
-| `BSNEXUS_WORKER_TOKEN` | Worker auth token (auto-saved by `register`) | — |
+| Variable                     | Description                                  | Default                  |
+| ---------------------------- | -------------------------------------------- | ------------------------ |
+| `BSNEXUS_SERVER_URL`         | Backend API URL                              | `http://localhost:8000`  |
+| `BSNEXUS_REDIS_URL`          | Redis connection URL                         | `redis://localhost:6379` |
+| `BSNEXUS_REGISTRATION_TOKEN` | Registration token                           | —                        |
+| `BSNEXUS_WORKER_NAME`        | Worker display name                          | auto-generated           |
+| `BSNEXUS_EXECUTOR_TYPE`      | Executor type                                | `claude-code`            |
+| `BSNEXUS_HEARTBEAT_INTERVAL` | Heartbeat interval (seconds)                 | `30`                     |
+| `BSNEXUS_DURATION`           | Max run time (seconds)                       | infinite                 |
+| `BSNEXUS_WORKER_ID`          | Worker ID (auto-saved by `register`)         | —                        |
+| `BSNEXUS_WORKER_TOKEN`       | Worker auth token (auto-saved by `register`) | —                        |
 
 Copy `.env.example` to `.env` and fill in the values for your environment.
 
