@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { useArchitectStore } from '../stores/architectStore'
+import { useToastStore } from '../stores/toastStore'
 import type { ChatMessage as ChatMessageType } from '../stores/architectStore'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { architectApi } from '../api/architect'
@@ -34,6 +35,7 @@ export default function ArchitectPage() {
     clearMessages,
   } = useArchitectStore()
 
+  const addToast = useToastStore((s) => s.addToast)
   const [newSessionModalOpen, setNewSessionModalOpen] = useState(false)
   const [showFinalizePanel, setShowFinalizePanel] = useState(false)
   const [designSummary, setDesignSummary] = useState('')
@@ -207,6 +209,40 @@ export default function ArchitectPage() {
     return result
   }
 
+  const handleDeleteSession = async (id: string) => {
+    if (!confirm('Are you sure you want to delete this session?')) return
+    try {
+      await architectApi.deleteSession(id)
+      const updated = sessions.filter((s) => s.id !== id)
+      setSessions(updated)
+      if (sessionId === id) {
+        setSessionId(null)
+        clearMessages()
+        setShowFinalizePanel(false)
+        navigate('/architect')
+      }
+    } catch {
+      addToast('Failed to delete session.')
+    }
+  }
+
+  const handleBatchDeleteSessions = async (ids: string[]) => {
+    if (!confirm(`Are you sure you want to delete ${ids.length} sessions?`)) return
+    try {
+      await architectApi.batchDeleteSessions(ids)
+      const updated = sessions.filter((s) => !ids.includes(s.id))
+      setSessions(updated)
+      if (sessionId && ids.includes(sessionId)) {
+        setSessionId(null)
+        clearMessages()
+        setShowFinalizePanel(false)
+        navigate('/architect')
+      }
+    } catch {
+      addToast('Failed to delete sessions.')
+    }
+  }
+
   const handleNewSession = () => {
     setNewSessionModalOpen(true)
   }
@@ -229,6 +265,8 @@ export default function ArchitectPage() {
             activeSessionId={null}
             onSelect={handleSelectSession}
             onNew={handleNewSession}
+            onDelete={handleDeleteSession}
+            onBatchDelete={handleBatchDeleteSessions}
           />
           <div className="flex-1 flex items-center justify-center">
             <div className="text-center space-y-4">
@@ -263,6 +301,8 @@ export default function ArchitectPage() {
           activeSessionId={sessionId}
           onSelect={handleSelectSession}
           onNew={handleNewSession}
+          onDelete={handleDeleteSession}
+          onBatchDelete={handleBatchDeleteSessions}
         />
         <div className="flex-1 flex flex-col">
           {/* Messages area */}

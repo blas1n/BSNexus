@@ -21,6 +21,11 @@ class BaseRepository:
         """Commit the current transaction."""
         await self.db.commit()
 
+    async def delete(self, entity: Any) -> None:
+        """Delete an entity from the database."""
+        await self.db.delete(entity)
+        await self.db.flush()
+
     async def refresh(self, entity: Any) -> None:
         """Refresh an entity instance from the database."""
         await self.db.refresh(entity)

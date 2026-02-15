@@ -331,6 +331,17 @@ class GlobalSettingsUpdate(BaseModel):
     llm_base_url: Optional[str] = None
 
 
+# ── Batch Delete Schemas ────────────────────────────────────────────
+
+
+class BatchDeleteRequest(BaseModel):
+    ids: list[uuid.UUID]
+
+
+class BatchDeleteResponse(BaseModel):
+    deleted: int
+
+
 # ── Registration Token Schemas ──────────────────────────────────────
 
 

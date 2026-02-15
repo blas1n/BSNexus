@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import Layout from './components/layout/Layout'
+import { ToastContainer } from './components/common'
 import DashboardPage from './pages/DashboardPage'
 import ArchitectPage from './pages/ArchitectPage'
 import BoardPage from './pages/BoardPage'
@@ -22,6 +23,7 @@ function App() {
           </Route>
         </Routes>
       </BrowserRouter>
+      <ToastContainer />
     </QueryClientProvider>
   )
 }

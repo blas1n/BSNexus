@@ -132,6 +132,46 @@ async def list_sessions(
     return [schemas.DesignSessionResponse.model_validate(s) for s in sessions]
 
 
+# ── 0b. Delete Session ──────────────────────────────────────────────
+
+
+@router.delete("/sessions/{session_id}")
+async def delete_session(
+    session_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Delete a design session and all its messages."""
+    repo = DesignSessionRepository(db)
+    session = await repo.get_by_id(session_id, load_messages=False)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    await repo.delete(session)
+    await repo.commit()
+
+    return {"detail": "Session deleted"}
+
+
+# ── 0c. Batch Delete Sessions ──────────────────────────────────────
+
+
+@router.post("/sessions/batch-delete", response_model=schemas.BatchDeleteResponse)
+async def batch_delete_sessions(
+    body: schemas.BatchDeleteRequest,
+    db: AsyncSession = Depends(get_db),
+) -> schemas.BatchDeleteResponse:
+    """Delete multiple design sessions by IDs."""
+    repo = DesignSessionRepository(db)
+    deleted = 0
+    for session_id in body.ids:
+        session = await repo.get_by_id(session_id, load_messages=False)
+        if session is not None:
+            await repo.delete(session)
+            deleted += 1
+    await repo.commit()
+    return schemas.BatchDeleteResponse(deleted=deleted)
+
+
 # ── 1. Create Session ────────────────────────────────────────────────
 
 

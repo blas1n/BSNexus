@@ -118,6 +118,41 @@ async def update_project(
     return schemas.ProjectResponse.model_validate(project)
 
 
+@router.delete("/{project_id}")
+async def delete_project(
+    project_id: UUID,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Delete a project and all associated phases, tasks, and design sessions."""
+    repo = ProjectRepository(db)
+    project = await repo.get_by_id(project_id)
+
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    await repo.delete(project)
+    await repo.commit()
+
+    return {"detail": "Project deleted"}
+
+
+@router.post("/batch-delete", response_model=schemas.BatchDeleteResponse)
+async def batch_delete_projects(
+    body: schemas.BatchDeleteRequest,
+    db: AsyncSession = Depends(get_db),
+) -> schemas.BatchDeleteResponse:
+    """Delete multiple projects by IDs."""
+    repo = ProjectRepository(db)
+    deleted = 0
+    for project_id in body.ids:
+        project = await repo.get_by_id(project_id)
+        if project is not None:
+            await repo.delete(project)
+            deleted += 1
+    await repo.commit()
+    return schemas.BatchDeleteResponse(deleted=deleted)
+
+
 # -- Phase Endpoints -----------------------------------------------------------
 
 
