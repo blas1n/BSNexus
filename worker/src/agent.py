@@ -18,20 +18,28 @@ class WorkerAgent:
         self._running = True
 
     async def register(self) -> None:
-        """Register this worker with the server."""
+        """Register this worker with the server. Reuses existing worker_id if available."""
         name = self.config.worker_name or f"worker-{platform.system().lower()}-{socket.gethostname()}"
         capabilities = self._detect_capabilities()
+
+        payload: dict = {
+            "name": name,
+            "platform": platform.system().lower(),
+            "capabilities": {cap: True for cap in capabilities},
+            "executor_type": self.config.executor_type,
+            "registration_token": self.config.registration_token or "",
+        }
+
+        # Include existing credentials for re-registration (preserves worker_id)
+        if self.worker_id:
+            payload["worker_id"] = self.worker_id
+        if self.token:
+            payload["worker_token"] = self.token
 
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
                 f"{self.config.server_url}/api/v1/workers/register",
-                json={
-                    "name": name,
-                    "platform": platform.system().lower(),
-                    "capabilities": {cap: True for cap in capabilities},
-                    "executor_type": self.config.executor_type,
-                    "registration_token": self.config.registration_token or "",
-                },
+                json=payload,
             )
             response.raise_for_status()
 
@@ -43,20 +51,45 @@ class WorkerAgent:
 
     async def heartbeat_loop(self) -> None:
         """Periodically send heartbeat to the server."""
+        consecutive_failures = 0
         while self._running:
             await asyncio.sleep(self.config.heartbeat_interval)
             if not self._running:
                 break
             try:
-                async with httpx.AsyncClient() as client:
+                async with httpx.AsyncClient(timeout=30.0) as client:
                     response = await client.post(
                         f"{self.config.server_url}/api/v1/workers/{self.worker_id}/heartbeat",
                         headers={"Authorization": f"Bearer {self.token}"},
                     )
                     if response.status_code == 404:
-                        await self.register()  # re-register
+                        print("Heartbeat 404: worker expired, re-registering...")
+                        await self._re_register()
+                    elif response.status_code >= 400:
+                        consecutive_failures += 1
+                        print(f"Heartbeat error: HTTP {response.status_code} ({consecutive_failures} failures)")
+                    else:
+                        consecutive_failures = 0
             except Exception as e:
-                print(f"Heartbeat failed: {e}")
+                consecutive_failures += 1
+                print(f"Heartbeat failed ({consecutive_failures}): {type(e).__name__}: {e}")
+                # Retry once after a short delay
+                if consecutive_failures == 1:
+                    await asyncio.sleep(5)
+                    continue
+                # Re-register after 3 consecutive failures
+                if consecutive_failures >= 3:
+                    print("Too many heartbeat failures, re-registering...")
+                    await self._re_register()
+                    consecutive_failures = 0
+
+    async def _re_register(self) -> None:
+        """Re-register with the server, preserving stream/group info for consumers."""
+        try:
+            await self.register()
+            print(f"Re-registered as worker {self.worker_id}")
+        except Exception as e:
+            print(f"Re-registration failed: {type(e).__name__}: {e}")
 
     def _detect_capabilities(self) -> list[str]:
         """Detect execution environment capabilities."""

@@ -95,6 +95,9 @@ async def run(config: WorkerConfig) -> None:
         return
 
     agent = WorkerAgent(config)
+    # Set existing credentials so register() reuses the same worker_id
+    agent.worker_id = config.worker_id
+    agent.token = config.worker_token
     # Re-register to refresh Redis state and get stream info
     await agent.register()
 
