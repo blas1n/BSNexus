@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.src import models
@@ -70,7 +70,12 @@ async def register_worker(
     # Proceed with Redis-based worker registration
     registry = _get_registry(request)
 
-    worker_id = str(uuid.uuid4())
+    # Re-registration: reuse existing worker_id if provided
+    if body.worker_id:
+        worker_id = body.worker_id
+    else:
+        worker_id = str(uuid.uuid4())
+
     name = body.name or f"worker-{worker_id[:8]}"
     capabilities = list(body.capabilities.keys()) if body.capabilities else []
 
@@ -81,6 +86,34 @@ async def register_worker(
         capabilities=capabilities,
         executor_type=body.executor_type,
     )
+
+    # Upsert worker in DB for persistent storage
+    now = datetime.now(timezone.utc)
+    worker_uuid = uuid.UUID(worker_id)
+    existing = await db.execute(select(models.Worker).where(models.Worker.id == worker_uuid))
+    db_worker = existing.scalar_one_or_none()
+
+    if db_worker:
+        db_worker.name = name
+        db_worker.platform = body.platform
+        db_worker.capabilities = capabilities
+        db_worker.executor_type = body.executor_type
+        db_worker.status = models.WorkerStatus.idle
+        db_worker.last_heartbeat = now
+    else:
+        db_worker = models.Worker(
+            id=worker_uuid,
+            name=name,
+            platform=body.platform,
+            capabilities=capabilities,
+            executor_type=body.executor_type,
+            status=models.WorkerStatus.idle,
+            registered_at=now,
+            last_heartbeat=now,
+        )
+        db.add(db_worker)
+
+    await db.commit()
 
     return {
         "worker_id": reg_result["worker_id"],
@@ -103,6 +136,7 @@ async def heartbeat_worker(
     worker_id: uuid.UUID,
     request: Request,
     authenticated_worker_id: str = Depends(verify_worker_token),
+    db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Send a heartbeat for the given worker (requires valid token)."""
     if str(worker_id) != authenticated_worker_id:
@@ -112,6 +146,14 @@ async def heartbeat_worker(
     alive = await registry.heartbeat(str(worker_id))
     if not alive:
         raise HTTPException(status_code=404, detail="Worker not found or expired")
+
+    # Update DB last_heartbeat
+    await db.execute(
+        update(models.Worker)
+        .where(models.Worker.id == worker_id)
+        .values(last_heartbeat=datetime.now(timezone.utc))
+    )
+    await db.commit()
 
     worker = await registry.get_worker(str(worker_id))
     status = worker["status"] if worker else "idle"
@@ -123,10 +165,35 @@ async def heartbeat_worker(
 
 
 @router.get("")
-async def list_workers(request: Request) -> list[dict]:
-    """Return all active (non-expired) workers."""
+async def list_workers(request: Request, db: AsyncSession = Depends(get_db)) -> list[dict]:
+    """Return all workers with DB data + Redis real-time status merged."""
     registry = _get_registry(request)
-    return await registry.get_all_workers()
+
+    # Get all workers from DB (persistent data including project_id)
+    result = await db.execute(select(models.Worker))
+    db_workers = result.scalars().all()
+
+    workers: list[dict] = []
+    for w in db_workers:
+        # Merge with Redis real-time status
+        redis_data = await registry.get_worker(str(w.id))
+        status = redis_data["status"] if redis_data else "offline"
+        current_task_id = (redis_data.get("current_task_id") or None) if redis_data else None
+
+        workers.append({
+            "id": str(w.id),
+            "name": w.name,
+            "platform": w.platform,
+            "capabilities": w.capabilities,
+            "executor_type": w.executor_type,
+            "status": status,
+            "current_task_id": current_task_id,
+            "project_id": str(w.project_id) if w.project_id else None,
+            "registered_at": w.registered_at.isoformat() if w.registered_at else None,
+            "last_heartbeat": w.last_heartbeat.isoformat() if w.last_heartbeat else None,
+        })
+
+    return workers
 
 
 @router.delete("/{worker_id}")

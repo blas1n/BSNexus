@@ -9,7 +9,8 @@ from backend.src import models, schemas
 from backend.src.repositories.task_repository import TaskRepository
 from backend.src.storage.database import get_db
 from backend.src.utils.worker_registry import WorkerRegistry
-from fastapi import APIRouter, Depends, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, Request
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
@@ -70,20 +71,28 @@ async def _get_board_data(
     for status in models.TaskStatus:
         stats[status.value] = status_counts.get(status.value, 0)
 
-    # Worker stats
+    # Worker stats — only workers assigned to this project
     registry = WorkerRegistry(redis_client)
+    assigned_ids: list[str] = []
+    workers: list[dict] = []
     try:
-        workers = await registry.get_all_workers()
+        result = await db.execute(
+            select(models.Worker.id).where(models.Worker.project_id == pid)
+        )
+        assigned_ids = [str(row[0]) for row in result.all()]
+        if assigned_ids:
+            workers = await registry.get_workers_by_ids(assigned_ids)
     except Exception:
-        workers = []
+        pass
     idle = sum(1 for w in workers if w.get("status") == "idle")
     busy = sum(1 for w in workers if w.get("status") == "busy")
+    offline = len(assigned_ids) - len(workers)
 
     return {
         "project_id": project_id,
         "columns": {status: {"tasks": task_list} for status, task_list in columns.items()},
         "stats": stats,
-        "workers": {"total": len(workers), "idle": idle, "busy": busy},
+        "workers": {"total": len(assigned_ids), "idle": idle, "busy": busy, "offline": offline},
     }
 
 
@@ -133,33 +142,3 @@ async def board_events(
     """SSE stream for board events."""
     redis_client: aioredis.Redis = request.app.state.redis
     return EventSourceResponse(_board_event_generator(project_id, redis_client))
-
-
-async def board_websocket_handler(websocket: WebSocket, project_id: str) -> None:
-    """WebSocket handler for real-time board updates. Registered on the app in main.py."""
-    await websocket.accept()
-    redis_client: aioredis.Redis = websocket.app.state.redis
-
-    try:
-        # Send initial board state (we don't have db session in WS easily, send a welcome)
-        await websocket.send_json({"event": "connected", "project_id": project_id})
-
-        # Poll events:board and forward
-        last_id = "$"
-        while True:
-            messages = await redis_client.xread(
-                streams={"events:board": last_id},
-                count=10,
-                block=5000,
-            )
-            if messages:
-                for _stream_name, entries in messages:
-                    for msg_id, data in entries:
-                        last_id = msg_id
-                        event_project_id = data.get("project_id", "")
-                        if event_project_id == project_id:
-                            await websocket.send_json(data)
-    except WebSocketDisconnect:
-        pass
-    except Exception:
-        pass

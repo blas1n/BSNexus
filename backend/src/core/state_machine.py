@@ -22,7 +22,7 @@ class TaskStateMachine:
     TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
         TaskStatus.waiting: {TaskStatus.ready, TaskStatus.blocked},
         TaskStatus.ready: {TaskStatus.queued},
-        TaskStatus.queued: {TaskStatus.in_progress},
+        TaskStatus.queued: {TaskStatus.in_progress, TaskStatus.ready},
         TaskStatus.in_progress: {TaskStatus.review, TaskStatus.rejected},
         TaskStatus.review: {TaskStatus.done, TaskStatus.rejected},
         TaskStatus.done: {TaskStatus.rejected},

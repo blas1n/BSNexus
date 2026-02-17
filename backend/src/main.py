@@ -1,12 +1,10 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from backend.src.api import architect, board, dashboard, pm, projects, registration_tokens, settings, tasks, workers
-from backend.src.api.architect import architect_websocket
-from backend.src.api.board import board_websocket_handler
 from backend.src.queue.background import start_background_consumer
 from backend.src.queue.streams import RedisStreamManager
 from backend.src.storage.database import init_db, engine
@@ -90,30 +88,3 @@ app.include_router(board.router)
 app.include_router(dashboard.router)
 app.include_router(settings.router)
 app.include_router(registration_tokens.router)
-
-
-@app.websocket("/ws/architect/{session_id}")
-async def ws_architect(
-    websocket: WebSocket,
-    session_id: str,
-) -> None:
-    """WebSocket endpoint for architect chat."""
-    import uuid as _uuid
-
-    try:
-        sid = _uuid.UUID(session_id)
-    except ValueError:
-        await websocket.accept()
-        await websocket.send_json({"type": "error", "content": "Invalid session ID"})
-        await websocket.close()
-        return
-    await architect_websocket(websocket, sid)
-
-
-@app.websocket("/ws/board/{project_id}")
-async def ws_board(
-    websocket: WebSocket,
-    project_id: str,
-) -> None:
-    """WebSocket endpoint for board updates."""
-    await board_websocket_handler(websocket, project_id)

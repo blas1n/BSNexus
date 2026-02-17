@@ -176,6 +176,8 @@ class WorkerRegister(BaseModel):
     capabilities: Optional[dict] = None
     executor_type: str = "claude-code"
     registration_token: str
+    worker_id: Optional[str] = None
+    worker_token: Optional[str] = None
 
 
 class WorkerResponse(BaseModel):
@@ -188,6 +190,7 @@ class WorkerResponse(BaseModel):
     status: WorkerStatus
     current_task_id: Optional[uuid.UUID] = None
     executor_type: str
+    project_id: Optional[uuid.UUID] = None
     registered_at: datetime
     last_heartbeat: Optional[datetime] = None
 
@@ -265,12 +268,14 @@ class DesignMessageResponse(BaseModel):
     content: str
     created_at: datetime
     finalize_ready: bool = False
+    design_context: Optional[str] = None
 
 
 class DesignSessionResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: uuid.UUID
     project_id: Optional[uuid.UUID] = None
+    worker_id: Optional[uuid.UUID] = None
     name: Optional[str] = None
     status: DesignSessionStatus
     created_at: datetime

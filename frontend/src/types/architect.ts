@@ -12,6 +12,7 @@ export interface DesignMessage {
 export interface DesignSession {
   id: string
   project_id: string | null
+  worker_id: string | null
   name: string | null
   status: DesignSessionStatus
   created_at: string
@@ -41,6 +42,7 @@ export interface DesignMessageResponse {
   content: string
   created_at: string
   finalize_ready?: boolean
+  design_context?: string
 }
 
 export interface FinalizeRequest {

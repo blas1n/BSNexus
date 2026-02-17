@@ -108,6 +108,7 @@ class Project(Base):
     design_sessions: Mapped[list["DesignSession"]] = relationship(
         "DesignSession", back_populates="project", cascade="all, delete-orphan"
     )
+    workers: Mapped[list["Worker"]] = relationship("Worker", back_populates="project")
 
 
 class Phase(Base):
@@ -206,10 +207,14 @@ class Worker(Base):
     status: Mapped[WorkerStatus] = mapped_column(Enum(WorkerStatus), nullable=False, default=WorkerStatus.idle)
     current_task_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
     executor_type: Mapped[str] = mapped_column(String(50), nullable=False, default="claude-code")
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("projects.id", ondelete="SET NULL"), nullable=True
+    )
     registered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_heartbeat: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Relationships
+    project: Mapped["Project | None"] = relationship("Project", back_populates="workers")
     assigned_tasks: Mapped[list["Task"]] = relationship(
         "Task", foreign_keys=[Task.worker_id], back_populates="worker"
     )
@@ -225,6 +230,7 @@ class DesignSession(Base):
     project_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("projects.id", ondelete="SET NULL"), nullable=True
     )
+    worker_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
     name: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
     status: Mapped[DesignSessionStatus] = mapped_column(
         Enum(DesignSessionStatus), nullable=False, default=DesignSessionStatus.active

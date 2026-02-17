@@ -136,6 +136,18 @@ class PMOrchestrator:
         worker_id = result.get("worker_id", "")
 
         if result_type == "execution":
+            # Transition to in_progress first if task is still queued
+            if task.status == TaskStatus.queued:
+                await self.state_machine.transition(
+                    task=task,
+                    new_status=TaskStatus.in_progress,
+                    reason="Worker started execution",
+                    actor="pm",
+                    db_session=db,
+                    stream_manager=self.stream_manager,
+                    worker_id=worker_id,
+                )
+
             if success:
                 await self._assign_reviewer(task, db, worker_id)
             else:
@@ -178,24 +190,16 @@ class PMOrchestrator:
                 await self.registry.set_idle(worker_id)
 
     async def _assign_reviewer(self, task: Task, db: AsyncSession, executor_worker_id: str) -> None:
-        """Assign a reviewer (different from the executor)."""
-        workers = await self.registry.get_all_workers()
-        available_reviewers = [w for w in workers if w["id"] != executor_worker_id and w["status"] == "idle"]
-
-        if available_reviewers:
-            reviewer = available_reviewers[0]
-            await self.state_machine.transition(
-                task=task,
-                new_status=TaskStatus.review,
-                reason="Assigned reviewer",
-                actor="pm",
-                db_session=db,
-                stream_manager=self.stream_manager,
-                reviewer_id=reviewer["id"],
-            )
-            await self.registry.set_busy(reviewer["id"], str(task.id))
-        # If no reviewers available, leave task in IN_PROGRESS
-        # Next scheduling loop will retry
+        """Assign the executor worker as reviewer (code lives on that worker)."""
+        await self.state_machine.transition(
+            task=task,
+            new_status=TaskStatus.review,
+            reason="Assigned reviewer (same worker)",
+            actor="pm",
+            db_session=db,
+            stream_manager=self.stream_manager,
+            reviewer_id=executor_worker_id,
+        )
 
     async def queue_next(self, project_id: uuid.UUID, db: AsyncSession) -> Task | None:
         """Manually queue the next ready task."""

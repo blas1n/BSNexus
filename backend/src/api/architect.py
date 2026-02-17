@@ -15,7 +15,8 @@ from backend.src.repositories.phase_repository import PhaseRepository
 from backend.src.repositories.project_repository import ProjectRepository
 from backend.src.repositories.task_repository import TaskRepository
 from backend.src.storage.database import get_db
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
@@ -195,9 +196,17 @@ async def create_session(
     if settings.get("llm_base_url"):
         llm_config_dict["base_url"] = settings["llm_base_url"]
 
+    # Parse worker_id if provided
+    worker_uuid = None
+    if body.worker_id:
+        try:
+            worker_uuid = uuid.UUID(body.worker_id)
+        except ValueError:
+            pass
+
     repo = DesignSessionRepository(db)
     session = await repo.add(
-        models.DesignSession(name=body.name, llm_config=llm_config_dict)
+        models.DesignSession(name=body.name, llm_config=llm_config_dict, worker_id=worker_uuid)
     )
     await repo.commit()
 
@@ -263,7 +272,7 @@ async def send_message(
         raise HTTPException(status_code=502, detail=f"LLM error: {e}") from e
 
     # Detect and strip finalize marker / design_context
-    cleaned_text, has_finalize, _ = _clean_response(response_text)
+    cleaned_text, has_finalize, design_context = _clean_response(response_text)
 
     # Save assistant response (original with design_context for later extraction)
     assistant_msg = await repo.add_message(
@@ -277,6 +286,7 @@ async def send_message(
     response = schemas.DesignMessageResponse.model_validate(assistant_msg)
     response.content = cleaned_text  # Strip design_context from frontend response
     response.finalize_ready = has_finalize
+    response.design_context = design_context
     return response
 
 
@@ -319,7 +329,7 @@ async def send_message_stream(
             return
 
         # Detect and strip finalize marker / design_context
-        cleaned_response, has_finalize, _ = _clean_response(full_response)
+        cleaned_response, has_finalize, design_context = _clean_response(full_response)
 
         # Save assistant response (with design_context preserved for finalize extraction)
         stored_response = full_response.replace(FINALIZE_MARKER, "").strip()
@@ -331,111 +341,12 @@ async def send_message_stream(
         yield {"event": "done", "data": cleaned_response}
 
         if has_finalize:
-            yield {"event": "finalize_ready", "data": ""}
+            yield {"event": "finalize_ready", "data": design_context or ""}
 
     return EventSourceResponse(event_generator())
 
 
-# ── 5. WebSocket Chat ────────────────────────────────────────────────
-
-
-async def architect_websocket(websocket: WebSocket, session_id: uuid.UUID) -> None:
-    """WebSocket handler for architect chat. Registered on the app in main.py.
-
-    Uses short-lived DB sessions per operation to avoid holding a connection
-    from the pool for the entire (long-lived) WebSocket lifetime.
-    """
-    from backend.src.storage.database import async_session
-
-    await websocket.accept()
-
-    # Load session with a short-lived DB session
-    async with async_session() as db:
-        repo = DesignSessionRepository(db)
-        session = await repo.get_by_id(session_id)
-    if session is None:
-        await websocket.send_json({"type": "error", "content": "Session not found"})
-        await websocket.close()
-        return
-
-    try:
-        while True:
-            data = await websocket.receive_json()
-
-            if data.get("type") != "message":
-                await websocket.send_json(
-                    {"type": "error", "content": "Unknown message type"}
-                )
-                continue
-
-            content = data.get("content", "")
-            if not content:
-                await websocket.send_json({"type": "error", "content": "Empty message"})
-                continue
-
-            try:
-                # Save user message and reload session in a short-lived DB session
-                async with async_session() as db:
-                    repo = DesignSessionRepository(db)
-                    await repo.add_message(session.id, models.MessageRole.user, content)
-                    await repo.commit()
-
-                    # Reload session with messages to get the latest
-                    reloaded = await repo.get_by_id(session_id)
-                if reloaded is None:
-                    await websocket.send_json(
-                        {"type": "error", "content": "Session not found"}
-                    )
-                    break
-                session = reloaded
-
-                # Build message history
-                messages = _build_message_history(session)
-
-                config = _build_llm_config(session.llm_config)
-                client = LLMClient(config)
-
-                full_response = ""
-                try:
-                    async for chunk in client.stream_chat(messages):
-                        full_response += chunk
-                        await websocket.send_json({"type": "chunk", "content": chunk})
-                except LLMError as e:
-                    await websocket.send_json({"type": "error", "content": str(e)})
-                    continue
-
-                # Detect and strip finalize marker / design_context
-                cleaned_response, has_finalize, _ctx = _clean_response(full_response)
-
-                # Save assistant response (with design_context preserved for finalize extraction)
-                stored_response = full_response.replace(FINALIZE_MARKER, "").strip()
-                async with async_session() as db:
-                    repo = DesignSessionRepository(db)
-                    await repo.add_message(
-                        session.id, models.MessageRole.assistant, stored_response
-                    )
-                    await repo.commit()
-
-                await websocket.send_json({"type": "done", "content": cleaned_response})
-
-                if has_finalize:
-                    await websocket.send_json({"type": "finalize_ready"})
-
-            except WebSocketDisconnect:
-                raise
-            except Exception as e:
-                try:
-                    await websocket.send_json(
-                        {"type": "error", "content": f"Internal error: {e}"}
-                    )
-                except (WebSocketDisconnect, RuntimeError):
-                    break
-
-    except WebSocketDisconnect:
-        pass
-
-
-# ── 6. Finalize Design ──────────────────────────────────────────────
+# ── 5. Finalize Design ──────────────────────────────────────────────
 
 
 @router.post("/sessions/{session_id}/finalize", response_model=schemas.ProjectResponse)
@@ -594,6 +505,15 @@ async def finalize_design(
         if i not in tasks_with_deps:
             task.status = models.TaskStatus.ready
 
+    # Assign worker to project if session had a worker selected
+    if session.worker_id:
+        worker_result = await db.execute(
+            select(models.Worker).where(models.Worker.id == session.worker_id)
+        )
+        worker = worker_result.scalar_one_or_none()
+        if worker:
+            worker.project_id = project.id
+
     # Update session status and link to project
     session.status = models.DesignSessionStatus.finalized
     session.project_id = project.id
@@ -605,7 +525,7 @@ async def finalize_design(
     return schemas.ProjectResponse.model_validate(loaded_project)
 
 
-# ── 7. Add Task to Existing Project ─────────────────────────────────
+# ── 6. Add Task to Existing Project ─────────────────────────────────
 
 
 @router.post(

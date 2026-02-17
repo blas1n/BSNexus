@@ -18,7 +18,7 @@ class WorkerRegistry:
     TOKEN_PREFIX = "worker:token:"
     TOKEN_TTL = 86400  # 24 hours
 
-    def __init__(self, redis_client: redis.Redis, ttl: int = 60) -> None:
+    def __init__(self, redis_client: redis.Redis, ttl: int = 90) -> None:
         self.redis = redis_client
         self.ttl = ttl
 
@@ -119,6 +119,15 @@ class WorkerRegistry:
             if worker is not None:
                 workers.append(worker)
 
+        return workers
+
+    async def get_workers_by_ids(self, worker_ids: list[str]) -> list[dict]:
+        """Return worker info for specific IDs. Missing/expired workers are omitted."""
+        workers: list[dict] = []
+        for wid in worker_ids:
+            worker = await self.get_worker(wid)
+            if worker is not None:
+                workers.append(worker)
         return workers
 
     async def set_busy(self, worker_id: str, task_id: str) -> None:
