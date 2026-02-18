@@ -136,14 +136,8 @@ async def test_list_ready_by_priority_empty() -> None:
 async def test_process_result_execution_success_assigns_reviewer(
     orchestrator: PMOrchestrator, mock_db: AsyncMock, mock_registry: AsyncMock, mock_state_machine: AsyncMock
 ) -> None:
-    """Execution success should assign a reviewer via _assign_reviewer."""
+    """Execution success should assign the executor worker as reviewer."""
     task = make_task(status=TaskStatus.in_progress)
-
-    reviewer_worker = {"id": "reviewer-1", "status": "idle"}
-    mock_registry.get_all_workers.return_value = [
-        {"id": "executor-1", "status": "busy"},
-        reviewer_worker,
-    ]
 
     result = {
         "task_id": str(task.id),
@@ -160,13 +154,11 @@ async def test_process_result_execution_success_assigns_reviewer(
 
         await orchestrator._process_result(result, mock_db)
 
-    # Should transition to review with reviewer_id
+    # Should transition to review with executor as reviewer
     mock_state_machine.transition.assert_called_once()
     call_kwargs = mock_state_machine.transition.call_args[1]
     assert call_kwargs["new_status"] == TaskStatus.review
-    assert call_kwargs["reviewer_id"] == "reviewer-1"
-    # Should set reviewer to busy
-    mock_registry.set_busy.assert_called_once_with("reviewer-1", str(task.id))
+    assert call_kwargs["reviewer_id"] == "executor-1"
 
 
 async def test_process_result_execution_failure_rejects_and_idles(
@@ -285,59 +277,18 @@ async def test_process_result_qa_fail_rejects(
 # -- _assign_reviewer ----------------------------------------------------------
 
 
-async def test_assign_reviewer_picks_different_worker(
-    orchestrator: PMOrchestrator, mock_db: AsyncMock, mock_registry: AsyncMock, mock_state_machine: AsyncMock
+async def test_assign_reviewer_uses_executor_worker(
+    orchestrator: PMOrchestrator, mock_db: AsyncMock, mock_state_machine: AsyncMock
 ) -> None:
-    """_assign_reviewer should pick a reviewer different from the executor."""
+    """_assign_reviewer should always assign the executor worker as reviewer."""
     task = make_task(status=TaskStatus.in_progress)
-
-    mock_registry.get_all_workers.return_value = [
-        {"id": "executor-1", "status": "idle"},
-        {"id": "reviewer-1", "status": "idle"},
-        {"id": "reviewer-2", "status": "idle"},
-    ]
 
     await orchestrator._assign_reviewer(task, mock_db, "executor-1")
 
     mock_state_machine.transition.assert_called_once()
     call_kwargs = mock_state_machine.transition.call_args[1]
     assert call_kwargs["new_status"] == TaskStatus.review
-    assert call_kwargs["reviewer_id"] == "reviewer-1"
-    mock_registry.set_busy.assert_called_once_with("reviewer-1", str(task.id))
-
-
-async def test_assign_reviewer_no_available_reviewers(
-    orchestrator: PMOrchestrator, mock_db: AsyncMock, mock_registry: AsyncMock, mock_state_machine: AsyncMock
-) -> None:
-    """_assign_reviewer should do nothing when no reviewers are available."""
-    task = make_task(status=TaskStatus.in_progress)
-
-    # Only the executor is available, no other idle workers
-    mock_registry.get_all_workers.return_value = [
-        {"id": "executor-1", "status": "idle"},
-    ]
-
-    await orchestrator._assign_reviewer(task, mock_db, "executor-1")
-
-    mock_state_machine.transition.assert_not_called()
-    mock_registry.set_busy.assert_not_called()
-
-
-async def test_assign_reviewer_all_others_busy(
-    orchestrator: PMOrchestrator, mock_db: AsyncMock, mock_registry: AsyncMock, mock_state_machine: AsyncMock
-) -> None:
-    """_assign_reviewer should do nothing when all other workers are busy."""
-    task = make_task(status=TaskStatus.in_progress)
-
-    mock_registry.get_all_workers.return_value = [
-        {"id": "executor-1", "status": "idle"},
-        {"id": "reviewer-1", "status": "busy"},
-    ]
-
-    await orchestrator._assign_reviewer(task, mock_db, "executor-1")
-
-    mock_state_machine.transition.assert_not_called()
-    mock_registry.set_busy.assert_not_called()
+    assert call_kwargs["reviewer_id"] == "executor-1"
 
 
 # -- queue_next ----------------------------------------------------------------

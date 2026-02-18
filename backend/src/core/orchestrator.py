@@ -121,7 +121,7 @@ class PMOrchestrator:
         """Process a single result message."""
         task_id = result.get("task_id", "")
         result_type = result.get("type", "execution")
-        success = result.get("success") == "true"
+        success = result.get("success") in ("true", True)
 
         repo = TaskRepository(db)
         task = await repo.get_by_id(uuid.UUID(task_id) if isinstance(task_id, str) else task_id)
@@ -165,7 +165,7 @@ class PMOrchestrator:
                     await self.registry.set_idle(worker_id)
 
         elif result_type == "qa":
-            passed = result.get("passed") == "true"
+            passed = result.get("passed") in ("true", True)
             if passed:
                 await self.state_machine.transition(
                     task=task,

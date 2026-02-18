@@ -183,7 +183,9 @@ async def test_valid_transition_rejected_to_ready(
     state_machine: TaskStateMachine, mock_db: AsyncMock, mock_stream: AsyncMock
 ) -> None:
     task = make_task(status=TaskStatus.rejected)
-    result = await state_machine.transition(task, TaskStatus.ready, db_session=mock_db, stream_manager=mock_stream)
+    with patch("backend.src.core.state_machine.TaskRepository") as MockRepo:
+        MockRepo.return_value.find_blocked_dependents = AsyncMock(return_value=[])
+        result = await state_machine.transition(task, TaskStatus.ready, db_session=mock_db, stream_manager=mock_stream)
     assert result.status == TaskStatus.ready
 
 
@@ -725,7 +727,9 @@ async def test_rejected_to_ready_resets_worker_id(
     state_machine: TaskStateMachine, mock_db: AsyncMock, mock_stream: AsyncMock
 ) -> None:
     task = make_task(status=TaskStatus.rejected, worker_id=uuid.uuid4())
-    await state_machine.transition(task, TaskStatus.ready, db_session=mock_db, stream_manager=mock_stream)
+    with patch("backend.src.core.state_machine.TaskRepository") as MockRepo:
+        MockRepo.return_value.find_blocked_dependents = AsyncMock(return_value=[])
+        await state_machine.transition(task, TaskStatus.ready, db_session=mock_db, stream_manager=mock_stream)
     assert task.worker_id is None
 
 
@@ -733,7 +737,9 @@ async def test_rejected_to_ready_resets_reviewer_id(
     state_machine: TaskStateMachine, mock_db: AsyncMock, mock_stream: AsyncMock
 ) -> None:
     task = make_task(status=TaskStatus.rejected, reviewer_id=uuid.uuid4())
-    await state_machine.transition(task, TaskStatus.ready, db_session=mock_db, stream_manager=mock_stream)
+    with patch("backend.src.core.state_machine.TaskRepository") as MockRepo:
+        MockRepo.return_value.find_blocked_dependents = AsyncMock(return_value=[])
+        await state_machine.transition(task, TaskStatus.ready, db_session=mock_db, stream_manager=mock_stream)
     assert task.reviewer_id is None
 
 
@@ -741,7 +747,9 @@ async def test_rejected_to_ready_resets_error_message(
     state_machine: TaskStateMachine, mock_db: AsyncMock, mock_stream: AsyncMock
 ) -> None:
     task = make_task(status=TaskStatus.rejected, error_message="Previous error")
-    await state_machine.transition(task, TaskStatus.ready, db_session=mock_db, stream_manager=mock_stream)
+    with patch("backend.src.core.state_machine.TaskRepository") as MockRepo:
+        MockRepo.return_value.find_blocked_dependents = AsyncMock(return_value=[])
+        await state_machine.transition(task, TaskStatus.ready, db_session=mock_db, stream_manager=mock_stream)
     assert task.error_message is None
 
 
@@ -749,8 +757,22 @@ async def test_rejected_to_ready_resets_qa_result(
     state_machine: TaskStateMachine, mock_db: AsyncMock, mock_stream: AsyncMock
 ) -> None:
     task = make_task(status=TaskStatus.rejected, qa_result={"passed": False})
-    await state_machine.transition(task, TaskStatus.ready, db_session=mock_db, stream_manager=mock_stream)
+    with patch("backend.src.core.state_machine.TaskRepository") as MockRepo:
+        MockRepo.return_value.find_blocked_dependents = AsyncMock(return_value=[])
+        await state_machine.transition(task, TaskStatus.ready, db_session=mock_db, stream_manager=mock_stream)
     assert task.qa_result is None
+
+
+async def test_rejected_to_ready_unblocks_dependents(
+    state_machine: TaskStateMachine, mock_db: AsyncMock, mock_stream: AsyncMock
+) -> None:
+    task = make_task(status=TaskStatus.rejected)
+    blocked_dep = make_task(status=TaskStatus.blocked, error_message=f"Dependency {task.id} was rejected")
+    with patch("backend.src.core.state_machine.TaskRepository") as MockRepo:
+        MockRepo.return_value.find_blocked_dependents = AsyncMock(return_value=[blocked_dep])
+        await state_machine.transition(task, TaskStatus.ready, db_session=mock_db, stream_manager=mock_stream)
+    assert blocked_dep.status == TaskStatus.waiting
+    assert blocked_dep.error_message is None
 
 
 async def test_waiting_to_ready_does_not_reset_fields(
