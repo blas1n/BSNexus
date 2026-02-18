@@ -17,6 +17,7 @@ class WorkerRegistry:
 
     PREFIX = "worker:"
     TOKEN_PREFIX = "worker:token:"
+    DB_HB_PREFIX = "worker:db_heartbeat:"
     TOKEN_TTL = 86400  # 24 hours
 
     def __init__(self, redis_client: redis.Redis, ttl: int = 90) -> None:
@@ -112,7 +113,7 @@ class WorkerRegistry:
             # Filter out token keys
             if isinstance(key, bytes):
                 key = key.decode()
-            if key.startswith(self.TOKEN_PREFIX):
+            if key.startswith(self.TOKEN_PREFIX) or key.startswith(self.DB_HB_PREFIX):
                 continue
 
             worker_id = key[len(self.PREFIX):]
