@@ -12,6 +12,7 @@ interface BoardState {
   stats: Record<string, number>
   workers: Record<string, number>
   phases: Record<string, PhaseInfo>
+  redesignTasks: Task[]
   selectedTask: Task | null
   isConnected: boolean
 
@@ -29,6 +30,7 @@ export const useBoardStore = create<BoardState>((set, get) => ({
   stats: {},
   workers: {},
   phases: {},
+  redesignTasks: [],
   selectedTask: null,
   isConnected: false,
 
@@ -40,6 +42,7 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       stats: data.stats,
       workers: data.workers,
       phases: data.phases || {},
+      redesignTasks: data.redesign_tasks || [],
     }),
 
   setSelectedTask: (task) => set({ selectedTask: task }),

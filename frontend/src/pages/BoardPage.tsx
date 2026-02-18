@@ -1,5 +1,5 @@
 import { useParams, useNavigate } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useBoard } from '../hooks/useBoard'
 import { useBoardStore } from '../stores/boardStore'
 import { projectsApi } from '../api/projects'
@@ -7,6 +7,7 @@ import KanbanBoard from '../components/board/KanbanBoard'
 import BoardStats from '../components/board/BoardStats'
 import TaskDetail from '../components/board/TaskDetail'
 import PMControl from '../components/board/PMControl'
+import RedesignView from '../components/board/RedesignView'
 import Header from '../components/layout/Header'
 import type { Task } from '../types/task'
 
@@ -42,13 +43,23 @@ export default function BoardPage() {
 
 function BoardContent({ projectId }: { projectId: string }) {
   const { isLoading } = useBoard(projectId)
-  const { columns, selectedTask, setSelectedTask, isConnected } = useBoardStore()
+  const { columns, redesignTasks, selectedTask, setSelectedTask, isConnected } = useBoardStore()
+  const queryClient = useQueryClient()
 
   const { data: project } = useQuery({
     queryKey: ['project', projectId],
     queryFn: () => projectsApi.get(projectId),
     enabled: !!projectId,
   })
+
+  const isRedesigning = redesignTasks.length > 0
+
+  const handleRedesignDone = () => {
+    // Refresh the board data
+    queryClient.invalidateQueries({ queryKey: ['board', projectId] })
+    // Force a re-fetch by refreshing the page state
+    window.location.reload()
+  }
 
   if (isLoading) {
     return (
@@ -69,27 +80,32 @@ function BoardContent({ projectId }: { projectId: string }) {
           <div className="flex items-center gap-2">
             <span
               className="inline-block w-2 h-2 rounded-full"
-              style={{ backgroundColor: isConnected ? 'var(--status-done)' : 'var(--status-rejected)' }}
+              style={{ backgroundColor: isConnected ? 'var(--status-done)' : 'var(--status-redesign)' }}
             />
             <span className="text-xs text-text-secondary">{isConnected ? 'Live' : 'Offline'}</span>
           </div>
         }
       />
-      <div className="p-8">
-        {/* PM Control */}
-        <div className="mb-4">
-          <PMControl projectId={projectId} />
+
+      {isRedesigning ? (
+        <RedesignView tasks={redesignTasks} onDone={handleRedesignDone} />
+      ) : (
+        <div className="p-8">
+          {/* PM Control */}
+          <div className="mb-4">
+            <PMControl projectId={projectId} />
+          </div>
+
+          {/* Stats bar */}
+          <BoardStats projectName={project?.name} />
+
+          {/* Kanban board */}
+          <KanbanBoard columns={columns} onTaskClick={(task: Task) => setSelectedTask(task)} />
+
+          {/* Task detail modal */}
+          {selectedTask && <TaskDetail task={selectedTask} onClose={() => setSelectedTask(null)} />}
         </div>
-
-        {/* Stats bar */}
-        <BoardStats projectName={project?.name} />
-
-        {/* Kanban board */}
-        <KanbanBoard columns={columns} onTaskClick={(task: Task) => setSelectedTask(task)} />
-
-        {/* Task detail modal */}
-        {selectedTask && <TaskDetail task={selectedTask} onClose={() => setSelectedTask(null)} />}
-      </div>
+      )}
     </>
   )
 }

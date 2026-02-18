@@ -1,6 +1,16 @@
 import apiClient from './client'
 import type { DesignSession, CreateSessionRequest, DesignMessageResponse, FinalizeRequest } from '../types/architect'
 import type { Project } from '../types/project'
+import type { Task } from '../types/task'
+
+export interface RedesignRequest {
+  action: 'modify' | 'delete' | 'split'
+  title?: string
+  description?: string
+  worker_prompt?: string
+  qa_prompt?: string
+  split_tasks?: Array<Record<string, unknown>>
+}
 
 export interface StreamCallbacks {
   onChunk: (text: string) => void
@@ -17,6 +27,7 @@ export const architectApi = {
   finalize: (sessionId: string, data: FinalizeRequest) => apiClient.post<Project>(`/api/v1/architect/sessions/${sessionId}/finalize`, data).then(r => r.data),
   deleteSession: (id: string) => apiClient.delete(`/api/v1/architect/sessions/${id}`).then(r => r.data),
   batchDeleteSessions: (ids: string[]) => apiClient.post<{ deleted: number }>('/api/v1/architect/sessions/batch-delete', { ids }).then(r => r.data),
+  redesignTask: (taskId: string, data: RedesignRequest) => apiClient.post<Task>(`/api/v1/architect/redesign/${taskId}`, data).then(r => r.data),
 
   streamMessage: (sessionId: string, content: string, callbacks: StreamCallbacks): AbortController => {
     const controller = new AbortController()

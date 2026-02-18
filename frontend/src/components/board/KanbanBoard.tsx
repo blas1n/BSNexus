@@ -1,7 +1,7 @@
 import type { Task } from '../../types/task'
 import KanbanColumn from './KanbanColumn'
 
-const columnOrder = ['waiting', 'ready', 'queued', 'in_progress', 'review', 'done', 'blocked', 'rejected']
+const columnOrder = ['waiting', 'ready', 'queued', 'in_progress', 'review', 'done']
 const columnLabels: Record<string, string> = {
   waiting: 'Waiting',
   ready: 'Ready',
@@ -9,8 +9,6 @@ const columnLabels: Record<string, string> = {
   in_progress: 'In Progress',
   review: 'Review',
   done: 'Done',
-  blocked: 'Blocked',
-  rejected: 'Rejected',
 }
 
 interface Props {

@@ -1,4 +1,4 @@
-export type TaskStatus = 'waiting' | 'ready' | 'queued' | 'in_progress' | 'review' | 'done' | 'rejected' | 'blocked'
+export type TaskStatus = 'waiting' | 'ready' | 'queued' | 'in_progress' | 'review' | 'done' | 'redesign'
 export type TaskPriority = 'low' | 'medium' | 'high' | 'critical'
 
 export interface Task {
@@ -18,6 +18,9 @@ export interface Task {
   qa_result: Record<string, unknown> | null
   output_path: string | null
   error_message: string | null
+  retry_count: number
+  max_retries: number
+  qa_feedback_history: Array<Record<string, unknown>> | null
   version: number
   created_at: string
   updated_at: string
@@ -73,4 +76,5 @@ export interface BoardResponse {
   stats: Record<string, number>
   workers: Record<string, number>
   phases: Record<string, PhaseInfo>
+  redesign_tasks: Task[]
 }

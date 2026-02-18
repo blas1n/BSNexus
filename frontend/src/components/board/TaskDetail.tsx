@@ -4,9 +4,7 @@ import { useBoardStore } from '../../stores/boardStore'
 import { Modal, Badge, Button } from '../common'
 
 const allowedTransitions: Partial<Record<TaskStatus, { label: string; to: TaskStatus }[]>> = {
-  rejected: [{ label: 'Retry', to: 'ready' }],
   ready: [{ label: 'Queue', to: 'queued' }],
-  blocked: [{ label: 'Unblock', to: 'ready' }],
 }
 
 interface Props {
@@ -35,8 +33,6 @@ export default function TaskDetail({ task, onClose }: Props) {
   const phaseInfo = phases[task.phase_id]
   const phaseLabel = phaseInfo ? `Phase ${phaseInfo.order} — ${phaseInfo.name}` : `Phase ${task.phase_id.slice(0, 8)}`
   const showCommit = ['review', 'done'].includes(task.status) && task.commit_hash
-  const isRejected = task.status === 'rejected'
-  const isBlocked = task.status === 'blocked'
 
   const footer = transitions.length > 0 ? (
     <>
@@ -120,56 +116,37 @@ export default function TaskDetail({ task, onClose }: Props) {
         </div>
       )}
 
-      {/* Rejection reason */}
-      {isRejected && task.error_message && (
-        <div
-          className="mb-4 rounded-md border p-3"
-          style={{
-            backgroundColor: 'color-mix(in srgb, var(--status-rejected) 10%, transparent)',
-            borderColor: 'var(--status-rejected)',
-          }}
-        >
-          <h3
-            className="text-sm font-medium mb-1"
-            style={{ color: 'var(--status-rejected)' }}
-          >
-            Rejection Reason
+      {/* Retry info */}
+      {task.retry_count > 0 && (
+        <div className="mb-4">
+          <h3 className="text-sm font-medium text-text-secondary mb-1">
+            Retries ({task.retry_count}/{task.max_retries})
           </h3>
-          <p className="text-sm text-text-primary whitespace-pre-wrap">{task.error_message}</p>
+          {task.qa_feedback_history && task.qa_feedback_history.length > 0 && (
+            <div className="space-y-2 max-h-48 overflow-y-auto">
+              {task.qa_feedback_history.map((entry, idx) => (
+                <div key={idx} className="rounded bg-bg-elevated p-2 text-xs">
+                  <span className="font-medium">Attempt {String(entry.attempt)}:</span>{' '}
+                  {String(entry.feedback || entry.error || 'No details')}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
-      {/* Blocked reason */}
-      {isBlocked && task.error_message && (
+      {/* Error message */}
+      {task.error_message && (
         <div
           className="mb-4 rounded-md border p-3"
           style={{
-            backgroundColor: 'color-mix(in srgb, var(--status-blocked) 10%, transparent)',
-            borderColor: 'var(--status-blocked)',
+            backgroundColor: 'color-mix(in srgb, var(--status-redesign) 10%, transparent)',
+            borderColor: 'var(--status-redesign)',
           }}
         >
           <h3
             className="text-sm font-medium mb-1"
-            style={{ color: 'var(--status-blocked)' }}
-          >
-            Blocked Reason
-          </h3>
-          <p className="text-sm text-text-primary whitespace-pre-wrap">{task.error_message}</p>
-        </div>
-      )}
-
-      {/* Error for non-rejected/blocked states */}
-      {!isRejected && !isBlocked && task.error_message && (
-        <div
-          className="mb-4 rounded-md border p-3"
-          style={{
-            backgroundColor: 'color-mix(in srgb, var(--status-rejected) 10%, transparent)',
-            borderColor: 'var(--status-rejected)',
-          }}
-        >
-          <h3
-            className="text-sm font-medium mb-1"
-            style={{ color: 'var(--status-rejected)' }}
+            style={{ color: 'var(--status-redesign)' }}
           >
             Error
           </h3>
