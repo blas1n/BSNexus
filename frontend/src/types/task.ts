@@ -1,4 +1,4 @@
-export type TaskStatus = 'waiting' | 'ready' | 'queued' | 'in_progress' | 'review' | 'done' | 'rejected'
+export type TaskStatus = 'waiting' | 'ready' | 'queued' | 'in_progress' | 'review' | 'done' | 'rejected' | 'blocked'
 export type TaskPriority = 'low' | 'medium' | 'high' | 'critical'
 
 export interface Task {
@@ -62,9 +62,15 @@ export interface BoardColumn {
   tasks: Task[]
 }
 
+export interface PhaseInfo {
+  name: string
+  order: number
+}
+
 export interface BoardResponse {
   project_id: string
   columns: Record<string, BoardColumn>
   stats: Record<string, number>
   workers: Record<string, number>
+  phases: Record<string, PhaseInfo>
 }

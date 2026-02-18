@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { Task, TaskStatus, BoardResponse } from '../types/task'
+import type { Task, TaskStatus, BoardResponse, PhaseInfo } from '../types/task'
 
 interface BoardStats {
   total: number
@@ -11,6 +11,7 @@ interface BoardState {
   columns: Record<string, Task[]>
   stats: Record<string, number>
   workers: Record<string, number>
+  phases: Record<string, PhaseInfo>
   selectedTask: Task | null
   isConnected: boolean
 
@@ -27,6 +28,7 @@ export const useBoardStore = create<BoardState>((set, get) => ({
   columns: {},
   stats: {},
   workers: {},
+  phases: {},
   selectedTask: null,
   isConnected: false,
 
@@ -37,6 +39,7 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       ),
       stats: data.stats,
       workers: data.workers,
+      phases: data.phases || {},
     }),
 
   setSelectedTask: (task) => set({ selectedTask: task }),

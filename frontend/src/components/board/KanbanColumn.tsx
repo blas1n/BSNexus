@@ -8,6 +8,7 @@ const columnStatusColors: Record<string, string> = {
   in_progress: 'var(--status-in-progress)',
   review: 'var(--status-review)',
   done: 'var(--status-done)',
+  blocked: 'var(--status-blocked)',
   rejected: 'var(--status-rejected)',
 }
 

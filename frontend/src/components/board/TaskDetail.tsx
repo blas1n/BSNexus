@@ -6,6 +6,7 @@ import { Modal, Badge, Button } from '../common'
 const allowedTransitions: Partial<Record<TaskStatus, { label: string; to: TaskStatus }[]>> = {
   rejected: [{ label: 'Retry', to: 'ready' }],
   ready: [{ label: 'Queue', to: 'queued' }],
+  blocked: [{ label: 'Unblock', to: 'ready' }],
 }
 
 interface Props {
@@ -14,7 +15,7 @@ interface Props {
 }
 
 export default function TaskDetail({ task, onClose }: Props) {
-  const { moveTask, updateTask } = useBoardStore()
+  const { moveTask, updateTask, phases } = useBoardStore()
   const transitions = allowedTransitions[task.status] || []
 
   const handleTransition = async (to: TaskStatus) => {
@@ -30,6 +31,12 @@ export default function TaskDetail({ task, onClose }: Props) {
       // Error handling
     }
   }
+
+  const phaseInfo = phases[task.phase_id]
+  const phaseLabel = phaseInfo ? `Phase ${phaseInfo.order} — ${phaseInfo.name}` : `Phase ${task.phase_id.slice(0, 8)}`
+  const showCommit = ['review', 'done'].includes(task.status) && task.commit_hash
+  const isRejected = task.status === 'rejected'
+  const isBlocked = task.status === 'blocked'
 
   const footer = transitions.length > 0 ? (
     <>
@@ -66,25 +73,19 @@ export default function TaskDetail({ task, onClose }: Props) {
       {/* Details grid */}
       <div className="mb-4 grid grid-cols-2 gap-3 text-sm">
         <div>
-          <span className="text-text-secondary">Phase ID</span>
-          <p className="text-text-primary truncate">{task.phase_id}</p>
+          <span className="text-text-secondary">Phase</span>
+          <p className="text-text-primary truncate">{phaseLabel}</p>
         </div>
-        {task.worker_id && (
-          <div>
-            <span className="text-text-secondary">Worker</span>
-            <p className="text-text-primary truncate">{task.worker_id}</p>
-          </div>
-        )}
-        {task.reviewer_id && (
-          <div>
-            <span className="text-text-secondary">Reviewer</span>
-            <p className="text-text-primary truncate">{task.reviewer_id}</p>
-          </div>
-        )}
         {task.branch_name && (
           <div>
             <span className="text-text-secondary">Branch</span>
             <p className="text-text-primary truncate">{task.branch_name}</p>
+          </div>
+        )}
+        {showCommit && (
+          <div>
+            <span className="text-text-secondary">Commit</span>
+            <p className="text-text-primary font-mono">{task.commit_hash!.slice(0, 8)}</p>
           </div>
         )}
         <div>
@@ -119,8 +120,46 @@ export default function TaskDetail({ task, onClose }: Props) {
         </div>
       )}
 
-      {/* Error message */}
-      {task.error_message && (
+      {/* Rejection reason */}
+      {isRejected && task.error_message && (
+        <div
+          className="mb-4 rounded-md border p-3"
+          style={{
+            backgroundColor: 'color-mix(in srgb, var(--status-rejected) 10%, transparent)',
+            borderColor: 'var(--status-rejected)',
+          }}
+        >
+          <h3
+            className="text-sm font-medium mb-1"
+            style={{ color: 'var(--status-rejected)' }}
+          >
+            Rejection Reason
+          </h3>
+          <p className="text-sm text-text-primary whitespace-pre-wrap">{task.error_message}</p>
+        </div>
+      )}
+
+      {/* Blocked reason */}
+      {isBlocked && task.error_message && (
+        <div
+          className="mb-4 rounded-md border p-3"
+          style={{
+            backgroundColor: 'color-mix(in srgb, var(--status-blocked) 10%, transparent)',
+            borderColor: 'var(--status-blocked)',
+          }}
+        >
+          <h3
+            className="text-sm font-medium mb-1"
+            style={{ color: 'var(--status-blocked)' }}
+          >
+            Blocked Reason
+          </h3>
+          <p className="text-sm text-text-primary whitespace-pre-wrap">{task.error_message}</p>
+        </div>
+      )}
+
+      {/* Error for non-rejected/blocked states */}
+      {!isRejected && !isBlocked && task.error_message && (
         <div
           className="mb-4 rounded-md border p-3"
           style={{
