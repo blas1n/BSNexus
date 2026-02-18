@@ -198,15 +198,23 @@ async def test_create_session_success(client: AsyncClient, db_session):
 async def test_create_session_stores_worker_id(client: AsyncClient, db_session):
     """POST /api/architect/sessions stores worker_id when provided."""
     await insert_global_llm_settings(db_session)
-    worker_id = str(uuid.uuid4())
+    worker_id = uuid.uuid4()
+
+    # Insert worker in DB so FK constraint is satisfied
+    db_session.add(Worker(
+        id=worker_id, name="w1", platform="linux",
+        executor_type="claude-code", status=WorkerStatus.idle,
+        registered_at=datetime.now(timezone.utc),
+    ))
+    await db_session.commit()
 
     response = await client.post(
         "/api/v1/architect/sessions",
-        json={"worker_id": worker_id},
+        json={"worker_id": str(worker_id)},
     )
     assert response.status_code == 201
     data = response.json()
-    assert data["worker_id"] == worker_id
+    assert data["worker_id"] == str(worker_id)
 
 
 async def test_create_session_without_worker_id(client: AsyncClient, db_session):

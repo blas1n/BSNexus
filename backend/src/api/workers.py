@@ -70,9 +70,17 @@ async def register_worker(
     # Proceed with Redis-based worker registration
     registry = _get_registry(request)
 
-    # Re-registration: reuse existing worker_id if provided
+    # Re-registration: reuse existing worker_id if provided and verify ownership
     if body.worker_id:
         worker_id = body.worker_id
+        existing_result = await db.execute(
+            select(models.Worker).where(models.Worker.id == uuid.UUID(worker_id))
+        )
+        existing_worker = existing_result.scalar_one_or_none()
+        if existing_worker is None:
+            raise HTTPException(status_code=404, detail="Worker not found for re-registration")
+        # Invalidate old Redis token before issuing a new one
+        await registry.deregister(worker_id)
     else:
         worker_id = str(uuid.uuid4())
 
@@ -147,13 +155,18 @@ async def heartbeat_worker(
     if not alive:
         raise HTTPException(status_code=404, detail="Worker not found or expired")
 
-    # Update DB last_heartbeat
-    await db.execute(
-        update(models.Worker)
-        .where(models.Worker.id == worker_id)
-        .values(last_heartbeat=datetime.now(timezone.utc))
-    )
-    await db.commit()
+    # Throttle DB writes: only update last_heartbeat every 60 seconds
+    redis_client = request.app.state.redis
+    db_hb_key = f"worker:db_heartbeat:{worker_id}"
+    last_db_hb = await redis_client.get(db_hb_key)
+    if not last_db_hb:
+        await db.execute(
+            update(models.Worker)
+            .where(models.Worker.id == worker_id)
+            .values(last_heartbeat=datetime.now(timezone.utc))
+        )
+        await db.commit()
+        await redis_client.set(db_hb_key, "1", ex=60)
 
     worker = await registry.get_worker(str(worker_id))
     status = worker["status"] if worker else "idle"

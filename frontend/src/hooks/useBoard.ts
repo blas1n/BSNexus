@@ -10,6 +10,7 @@ export function useBoard(projectId: string) {
   const sourceRef = useRef<EventSource | null>(null)
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const retriesRef = useRef(0)
+  const MAX_RETRIES = 10
 
   const query = useQuery({
     queryKey: ['board', projectId],
@@ -91,10 +92,12 @@ export function useBoard(projectId: string) {
         setLocalConnected(false)
         setConnected(false)
 
-        // Reconnect with exponential backoff
-        const delay = Math.min(1000 * Math.pow(2, retriesRef.current), 30000)
-        retriesRef.current += 1
-        reconnectTimerRef.current = setTimeout(connect, delay)
+        // Reconnect with exponential backoff, up to MAX_RETRIES
+        if (retriesRef.current < MAX_RETRIES) {
+          const delay = Math.min(1000 * Math.pow(2, retriesRef.current), 30000)
+          retriesRef.current += 1
+          reconnectTimerRef.current = setTimeout(connect, delay)
+        }
       }
 
       sourceRef.current = source
