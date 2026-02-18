@@ -22,7 +22,7 @@ class TaskStateMachine:
     TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
         TaskStatus.waiting: {TaskStatus.ready, TaskStatus.blocked},
         TaskStatus.ready: {TaskStatus.queued},
-        TaskStatus.queued: {TaskStatus.in_progress, TaskStatus.ready},
+        TaskStatus.queued: {TaskStatus.in_progress},
         TaskStatus.in_progress: {TaskStatus.review, TaskStatus.rejected},
         TaskStatus.review: {TaskStatus.done, TaskStatus.rejected},
         TaskStatus.done: {TaskStatus.rejected},
@@ -126,12 +126,16 @@ class TaskStateMachine:
         stream_manager: Optional[RedisStreamManager] = None,
         **kwargs: Any,
     ) -> None:
-        """Reset execution fields when retrying from REJECTED."""
+        """Reset execution fields when retrying from REJECTED, and unblock dependents."""
         if old_status == TaskStatus.rejected:
             task.worker_id = None
             task.reviewer_id = None
             task.error_message = None
             task.qa_result = None
+            # Unblock dependents that were blocked due to this task's rejection
+            if db_session is not None:
+                repo = TaskRepository(db_session)
+                await self._unblock_dependents(task, repo, db_session)
 
     async def _on_queued(
         self,
@@ -320,6 +324,25 @@ class TaskStateMachine:
             db_session.add(history)
             blocked.append(waiting_task)
         return blocked
+
+    async def _unblock_dependents(self, task: Task, repo: TaskRepository, db_session: AsyncSession) -> list[Task]:
+        """Transition BLOCKED dependents back to WAITING when a rejected task retries."""
+        blocked_tasks = await repo.find_blocked_dependents(task.id)
+        unblocked: list[Task] = []
+        for blocked_task in blocked_tasks:
+            blocked_task.status = TaskStatus.waiting
+            blocked_task.version += 1
+            blocked_task.error_message = None
+            history = TaskHistory(
+                task_id=blocked_task.id,
+                from_status=TaskStatus.blocked.value,
+                to_status=TaskStatus.waiting.value,
+                actor="system",
+                reason=f"Dependency {task.id} is retrying",
+            )
+            db_session.add(history)
+            unblocked.append(blocked_task)
+        return unblocked
 
     # -- Dependency Methods ----------------------------------------------------
 

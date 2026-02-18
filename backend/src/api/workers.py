@@ -173,10 +173,17 @@ async def list_workers(request: Request, db: AsyncSession = Depends(get_db)) -> 
     result = await db.execute(select(models.Worker))
     db_workers = result.scalars().all()
 
+    if not db_workers:
+        return []
+
+    # Batch fetch Redis status for all workers
+    worker_ids = [str(w.id) for w in db_workers]
+    redis_workers = await registry.get_workers_by_ids(worker_ids)
+    redis_map = {w["id"]: w for w in redis_workers}
+
     workers: list[dict] = []
     for w in db_workers:
-        # Merge with Redis real-time status
-        redis_data = await registry.get_worker(str(w.id))
+        redis_data = redis_map.get(str(w.id))
         status = redis_data["status"] if redis_data else "offline"
         current_task_id = (redis_data.get("current_task_id") or None) if redis_data else None
 

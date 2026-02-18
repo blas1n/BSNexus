@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import AsyncGenerator
 
 import redis.asyncio as aioredis
@@ -13,6 +14,8 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/board", tags=["board"])
 
@@ -83,16 +86,26 @@ async def _get_board_data(
         if assigned_ids:
             workers = await registry.get_workers_by_ids(assigned_ids)
     except Exception:
-        pass
+        logger.warning("Failed to fetch assigned workers for project %s", pid, exc_info=True)
     idle = sum(1 for w in workers if w.get("status") == "idle")
     busy = sum(1 for w in workers if w.get("status") == "busy")
     offline = len(assigned_ids) - len(workers)
+
+    # Phase lookup: id -> {name, order}
+    phase_result = await db.execute(
+        select(models.Phase.id, models.Phase.name, models.Phase.order).where(models.Phase.project_id == pid)
+    )
+    phases = {
+        str(row.id): {"name": row.name, "order": row.order}
+        for row in phase_result.all()
+    }
 
     return {
         "project_id": project_id,
         "columns": {status: {"tasks": task_list} for status, task_list in columns.items()},
         "stats": stats,
         "workers": {"total": len(assigned_ids), "idle": idle, "busy": busy, "offline": offline},
+        "phases": phases,
     }
 
 

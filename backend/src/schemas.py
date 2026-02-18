@@ -253,7 +253,7 @@ class LLMConfigInput(BaseModel):
 
 class CreateSessionRequest(BaseModel):
     name: Optional[str] = None
-    worker_id: Optional[str] = None
+    worker_id: Optional[uuid.UUID] = None
 
 
 class MessageRequest(BaseModel):
@@ -345,6 +345,10 @@ class BatchDeleteRequest(BaseModel):
 
 class BatchDeleteResponse(BaseModel):
     deleted: int
+
+
+class DeleteResponse(BaseModel):
+    detail: str
 
 
 # ── Registration Token Schemas ──────────────────────────────────────

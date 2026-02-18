@@ -136,11 +136,11 @@ async def list_sessions(
 # ── 0b. Delete Session ──────────────────────────────────────────────
 
 
-@router.delete("/sessions/{session_id}")
+@router.delete("/sessions/{session_id}", response_model=schemas.DeleteResponse)
 async def delete_session(
     session_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-) -> dict:
+) -> schemas.DeleteResponse:
     """Delete a design session and all its messages."""
     repo = DesignSessionRepository(db)
     session = await repo.get_by_id(session_id, load_messages=False)
@@ -150,7 +150,7 @@ async def delete_session(
     await repo.delete(session)
     await repo.commit()
 
-    return {"detail": "Session deleted"}
+    return schemas.DeleteResponse(detail="Session deleted")
 
 
 # ── 0c. Batch Delete Sessions ──────────────────────────────────────
@@ -162,15 +162,13 @@ async def batch_delete_sessions(
     db: AsyncSession = Depends(get_db),
 ) -> schemas.BatchDeleteResponse:
     """Delete multiple design sessions by IDs."""
-    repo = DesignSessionRepository(db)
-    deleted = 0
-    for session_id in body.ids:
-        session = await repo.get_by_id(session_id, load_messages=False)
-        if session is not None:
-            await repo.delete(session)
-            deleted += 1
-    await repo.commit()
-    return schemas.BatchDeleteResponse(deleted=deleted)
+    from sqlalchemy import delete as sa_delete
+
+    result = await db.execute(
+        sa_delete(models.DesignSession).where(models.DesignSession.id.in_(body.ids))
+    )
+    await db.commit()
+    return schemas.BatchDeleteResponse(deleted=result.rowcount)
 
 
 # ── 1. Create Session ────────────────────────────────────────────────
@@ -196,17 +194,9 @@ async def create_session(
     if settings.get("llm_base_url"):
         llm_config_dict["base_url"] = settings["llm_base_url"]
 
-    # Parse worker_id if provided
-    worker_uuid = None
-    if body.worker_id:
-        try:
-            worker_uuid = uuid.UUID(body.worker_id)
-        except ValueError:
-            pass
-
     repo = DesignSessionRepository(db)
     session = await repo.add(
-        models.DesignSession(name=body.name, llm_config=llm_config_dict, worker_id=worker_uuid)
+        models.DesignSession(name=body.name, llm_config=llm_config_dict, worker_id=body.worker_id)
     )
     await repo.commit()
 

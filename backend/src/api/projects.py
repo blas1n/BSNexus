@@ -118,11 +118,11 @@ async def update_project(
     return schemas.ProjectResponse.model_validate(project)
 
 
-@router.delete("/{project_id}")
+@router.delete("/{project_id}", response_model=schemas.DeleteResponse)
 async def delete_project(
     project_id: UUID,
     db: AsyncSession = Depends(get_db),
-) -> dict:
+) -> schemas.DeleteResponse:
     """Delete a project and all associated phases, tasks, and design sessions."""
     repo = ProjectRepository(db)
     project = await repo.get_by_id(project_id)
@@ -133,7 +133,7 @@ async def delete_project(
     await repo.delete(project)
     await repo.commit()
 
-    return {"detail": "Project deleted"}
+    return schemas.DeleteResponse(detail="Project deleted")
 
 
 @router.post("/batch-delete", response_model=schemas.BatchDeleteResponse)
@@ -142,15 +142,13 @@ async def batch_delete_projects(
     db: AsyncSession = Depends(get_db),
 ) -> schemas.BatchDeleteResponse:
     """Delete multiple projects by IDs."""
-    repo = ProjectRepository(db)
-    deleted = 0
-    for project_id in body.ids:
-        project = await repo.get_by_id(project_id)
-        if project is not None:
-            await repo.delete(project)
-            deleted += 1
-    await repo.commit()
-    return schemas.BatchDeleteResponse(deleted=deleted)
+    from sqlalchemy import delete as sa_delete
+
+    result = await db.execute(
+        sa_delete(models.Project).where(models.Project.id.in_(body.ids))
+    )
+    await db.commit()
+    return schemas.BatchDeleteResponse(deleted=result.rowcount)
 
 
 # -- Phase Endpoints -----------------------------------------------------------

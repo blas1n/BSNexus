@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import secrets
 
@@ -123,12 +124,10 @@ class WorkerRegistry:
 
     async def get_workers_by_ids(self, worker_ids: list[str]) -> list[dict]:
         """Return worker info for specific IDs. Missing/expired workers are omitted."""
-        workers: list[dict] = []
-        for wid in worker_ids:
-            worker = await self.get_worker(wid)
-            if worker is not None:
-                workers.append(worker)
-        return workers
+        if not worker_ids:
+            return []
+        results = await asyncio.gather(*(self.get_worker(wid) for wid in worker_ids))
+        return [w for w in results if w is not None]
 
     async def set_busy(self, worker_id: str, task_id: str) -> None:
         """Set worker status to busy and record the current task."""

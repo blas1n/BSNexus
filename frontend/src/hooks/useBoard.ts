@@ -56,6 +56,9 @@ export function useBoard(projectId: string) {
     [moveTask, updateTask, assignWorker],
   )
 
+  const handleEventRef = useRef(handleEvent)
+  handleEventRef.current = handleEvent
+
   useEffect(() => {
     if (!projectId) return
 
@@ -78,7 +81,7 @@ export function useBoard(projectId: string) {
       source.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data)
-          handleEvent(data)
+          handleEventRef.current(data)
         } catch { /* ignore parse errors */ }
       }
 
@@ -111,7 +114,7 @@ export function useBoard(projectId: string) {
       setLocalConnected(false)
       setConnected(false)
     }
-  }, [projectId, handleEvent, setConnected])
+  }, [projectId, setConnected])
 
   return { ...query, isConnected, refetch: query.refetch }
 }
