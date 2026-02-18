@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,9 +15,11 @@ from backend.src.queue.streams import RedisStreamManager
 from backend.src.repositories.task_repository import TaskRepository
 from backend.src.utils.worker_registry import WorkerRegistry
 
+logger = logging.getLogger(__name__)
+
 
 class PMOrchestrator:
-    """PM Orchestrator - task scheduling and result processing."""
+    """PM Orchestrator - task scheduling, result processing, and auto-retry."""
 
     def __init__(
         self,
@@ -54,8 +59,8 @@ class PMOrchestrator:
                             stream_manager=self.stream_manager,
                         )
                 await db.commit()
-        except Exception as e:
-            print(f"Promote waiting tasks error: {e}")
+        except Exception:
+            logger.exception("Promote waiting tasks error")
 
     async def stop(self) -> None:
         """Stop orchestration."""
@@ -82,8 +87,8 @@ class PMOrchestrator:
                         )
 
                     await db.commit()
-            except Exception as e:
-                print(f"Scheduling loop error: {e}")
+            except Exception:
+                logger.exception("Scheduling loop error")
 
             await asyncio.sleep(5)
 
@@ -104,17 +109,17 @@ class PMOrchestrator:
                         async with db_session_factory() as db:
                             await self._process_result(msg, db)
                             await db.commit()
-                    except Exception as e:
-                        print(f"Result processing error: {e}")
-
-                    await self.stream_manager.acknowledge(
-                        RedisStreamManager.TASKS_RESULTS,
-                        RedisStreamManager.GROUP_PM,
-                        msg["_message_id"],
-                    )
-            except Exception as e:
+                        # ACK only after successful commit to ensure atomicity
+                        await self.stream_manager.acknowledge(
+                            RedisStreamManager.TASKS_RESULTS,
+                            RedisStreamManager.GROUP_PM,
+                            msg["_message_id"],
+                        )
+                    except Exception:
+                        logger.exception("Result processing error for message %s", msg.get("_message_id"))
+            except Exception:
                 if self._running:
-                    print(f"Results loop error: {e}")
+                    logger.exception("Results loop error")
                     await asyncio.sleep(5)
 
     async def _process_result(self, result: dict[str, Any], db: AsyncSession) -> None:
@@ -152,17 +157,7 @@ class PMOrchestrator:
                 await self._assign_reviewer(task, db, worker_id)
             else:
                 error_msg = result.get("error_message", "")
-                await self.state_machine.transition(
-                    task=task,
-                    new_status=TaskStatus.rejected,
-                    reason=f"Execution failed: {error_msg}",
-                    actor="pm",
-                    db_session=db,
-                    stream_manager=self.stream_manager,
-                )
-                # Set worker back to idle
-                if worker_id:
-                    await self.registry.set_idle(worker_id)
+                await self._handle_execution_failure(task, db, worker_id, error_msg)
 
         elif result_type == "qa":
             passed = result.get("passed") in ("true", True)
@@ -177,17 +172,109 @@ class PMOrchestrator:
                 )
             else:
                 feedback = result.get("feedback", "")
-                await self.state_machine.transition(
-                    task=task,
-                    new_status=TaskStatus.rejected,
-                    reason=f"QA failed: {feedback}",
-                    actor="pm",
-                    db_session=db,
-                    stream_manager=self.stream_manager,
-                )
+                await self._handle_qa_failure(task, db, worker_id, feedback)
+
             # Set reviewer back to idle
             if worker_id:
                 await self.registry.set_idle(worker_id)
+
+    async def _handle_execution_failure(
+        self, task: Task, db: AsyncSession, worker_id: str, error_msg: str
+    ) -> None:
+        """Handle execution failure with auto-retry or escalation to redesign."""
+        task.retry_count += 1
+
+        if task.qa_feedback_history is None:
+            task.qa_feedback_history = []
+        task.qa_feedback_history.append({
+            "type": "execution_failure",
+            "attempt": task.retry_count,
+            "error": error_msg,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+
+        if task.retry_count >= task.max_retries:
+            await self.state_machine.transition(
+                task=task,
+                new_status=TaskStatus.redesign,
+                reason=f"Max retries ({task.max_retries}) exceeded. Last error: {error_msg}",
+                actor="pm",
+                db_session=db,
+                stream_manager=self.stream_manager,
+            )
+        else:
+            await self.state_machine.transition(
+                task=task,
+                new_status=TaskStatus.ready,
+                reason=f"Execution failed (attempt {task.retry_count}/{task.max_retries}): {error_msg}",
+                actor="pm",
+                db_session=db,
+                stream_manager=self.stream_manager,
+            )
+
+        # Set worker back to idle
+        if worker_id:
+            await self.registry.set_idle(worker_id)
+
+    async def _handle_qa_failure(
+        self, task: Task, db: AsyncSession, worker_id: str, feedback: str
+    ) -> None:
+        """Handle QA failure with auto-retry or escalation to redesign."""
+        task.retry_count += 1
+
+        if task.qa_feedback_history is None:
+            task.qa_feedback_history = []
+        task.qa_feedback_history.append({
+            "type": "qa_failure",
+            "attempt": task.retry_count,
+            "feedback": feedback,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+
+        if task.retry_count >= task.max_retries:
+            await self.state_machine.transition(
+                task=task,
+                new_status=TaskStatus.redesign,
+                reason=f"Max retries ({task.max_retries}) exceeded. Last QA feedback: {feedback}",
+                actor="pm",
+                db_session=db,
+                stream_manager=self.stream_manager,
+            )
+        else:
+            await self.state_machine.transition(
+                task=task,
+                new_status=TaskStatus.in_progress,
+                reason=f"QA failed (attempt {task.retry_count}/{task.max_retries}), auto-retrying",
+                actor="pm",
+                db_session=db,
+                stream_manager=self.stream_manager,
+            )
+            # Re-queue the task with QA feedback for the worker
+            await self._requeue_with_feedback(task, db, feedback)
+
+    async def _requeue_with_feedback(self, task: Task, db: AsyncSession, feedback: str) -> None:
+        """Re-queue a task for execution with QA feedback included in the prompt."""
+        message: dict[str, Any] = {
+            "task_id": str(task.id),
+            "project_id": str(task.project_id),
+            "priority": task.priority.value,
+            "title": task.title,
+            "retry_feedback": feedback,
+            "retry_count": str(task.retry_count),
+        }
+        if task.branch_name:
+            message["branch_name"] = task.branch_name
+        if task.worker_prompt:
+            prompt_text = task.worker_prompt if isinstance(task.worker_prompt, str) else json.dumps(task.worker_prompt)
+            message["worker_prompt"] = prompt_text
+        # Include repo_path
+        from backend.src.repositories.project_repository import ProjectRepository
+
+        project_repo = ProjectRepository(db)
+        project = await project_repo.get_by_id(task.project_id, load_phases=False)
+        if project:
+            message["repo_path"] = project.repo_path
+        await self.stream_manager.publish("tasks:queue", message)
 
     async def _assign_reviewer(self, task: Task, db: AsyncSession, executor_worker_id: str) -> None:
         """Assign the executor worker as reviewer (code lives on that worker)."""

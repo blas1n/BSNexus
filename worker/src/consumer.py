@@ -106,12 +106,6 @@ class TaskConsumer:
     async def _process_task(self, msg_id: str, data: dict) -> None:
         """Execute a task and publish result."""
         task_id = self._decode(data.get("task_id", ""))
-        msg_type = self._decode(data.get("type", "execution"))
-
-        # Handle revert requests
-        if msg_type == "revert":
-            await self._process_revert(msg_id, data)
-            return
 
         repo_path = self._decode(data.get("repo_path", ""))
         branch_name = self._decode(data.get("branch_name", ""))
@@ -127,6 +121,17 @@ class TaskConsumer:
             prompt = prompt_data.get("prompt", prompt_raw) if isinstance(prompt_data, dict) else prompt_raw
         except (json.JSONDecodeError, TypeError):
             prompt = prompt_raw
+
+        # Inject retry feedback from previous failed attempt
+        retry_feedback = self._decode(data.get("retry_feedback", ""))
+        retry_count = self._decode(data.get("retry_count", "0"))
+        if retry_feedback:
+            prompt = (
+                f"PREVIOUS ATTEMPT FAILED (attempt {retry_count}).\n"
+                f"Feedback from previous attempt:\n{retry_feedback}\n\n"
+                f"Please fix the issues identified above and complete the task.\n\n"
+                f"Original task:\n{prompt}"
+            )
 
         prompt_preview = prompt[:200].replace("\n", " ")
         log.info("    prompt: %s%s", prompt_preview, "..." if len(prompt) > 200 else "")
@@ -194,27 +199,6 @@ class TaskConsumer:
                     "branch_name": branch_name,
                 },
             )
-        finally:
-            await self.redis.xack(  # type: ignore[misc]
-                self.agent.streams["tasks_queue"],
-                self.agent.consumer_groups["workers"],
-                msg_id,
-            )
-
-    async def _process_revert(self, msg_id: str, data: dict) -> None:
-        """Handle a revert request from the backend."""
-        repo_path = self._decode(data.get("repo_path", ""))
-        commit_hash = self._decode(data.get("commit_hash", ""))
-        branch_name = self._decode(data.get("branch_name", ""))
-
-        log.info(">>> REVERT         commit=%s branch=%s", commit_hash[:8] if commit_hash else "?", branch_name)
-        try:
-            if repo_path and commit_hash and branch_name:
-                git_ops = WorkerGitOps(repo_path)
-                await git_ops.revert_task(commit_hash, branch_name)
-                log.info("<<< REVERT DONE    commit=%s", commit_hash[:8])
-        except RuntimeError as e:
-            log.warning("<<< REVERT FAILED  commit=%s error=%s", commit_hash[:8] if commit_hash else "?", e)
         finally:
             await self.redis.xack(  # type: ignore[misc]
                 self.agent.streams["tasks_queue"],

@@ -515,7 +515,108 @@ async def finalize_design(
     return schemas.ProjectResponse.model_validate(loaded_project)
 
 
-# ── 6. Add Task to Existing Project ─────────────────────────────────
+# ── 6. Redesign Task ────────────────────────────────────────────────
+
+
+@router.post("/redesign/{task_id}", response_model=schemas.TaskResponse)
+async def redesign_task(
+    task_id: uuid.UUID,
+    body: schemas.TaskRedesignRequest,
+    db: AsyncSession = Depends(get_db),
+) -> schemas.TaskResponse:
+    """Redesign a task that has exceeded max retries."""
+    from backend.src.core.state_machine import TaskStateMachine
+
+    task_repo = TaskRepository(db)
+    task = await task_repo.get_by_id(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if task.status != models.TaskStatus.redesign:
+        raise HTTPException(status_code=400, detail="Task is not in redesign status")
+
+    state_machine = TaskStateMachine()
+
+    if body.action == schemas.RedesignAction.modify:
+        # Update task fields
+        if body.title is not None:
+            task.title = body.title
+        if body.description is not None:
+            task.description = body.description
+        if body.worker_prompt is not None:
+            task.worker_prompt = {"prompt": body.worker_prompt}
+        if body.qa_prompt is not None:
+            task.qa_prompt = {"prompt": body.qa_prompt}
+        # Reset retry state
+        task.retry_count = 0
+        task.qa_feedback_history = None
+        task.error_message = None
+        task.commit_hash = None
+        # Transition back to waiting
+        await state_machine.transition(
+            task=task,
+            new_status=models.TaskStatus.waiting,
+            reason="Redesigned by Architect (modify)",
+            actor="architect",
+            db_session=db,
+        )
+
+    elif body.action == schemas.RedesignAction.delete:
+        # Mark as done (effectively removes it from the pipeline)
+        await state_machine.transition(
+            task=task,
+            new_status=models.TaskStatus.done,
+            reason="Removed by Architect (delete)",
+            actor="architect",
+            db_session=db,
+        )
+
+    elif body.action == schemas.RedesignAction.split:
+        if not body.split_tasks or len(body.split_tasks) == 0:
+            raise HTTPException(status_code=400, detail="split_tasks is required for split action")
+
+        # Mark original task as done
+        await state_machine.transition(
+            task=task,
+            new_status=models.TaskStatus.done,
+            reason="Split into sub-tasks by Architect",
+            actor="architect",
+            db_session=db,
+        )
+
+        # Create new tasks from split_tasks
+        for sub in body.split_tasks:
+            priority_str = sub.get("priority", "medium")
+            try:
+                priority = models.TaskPriority(priority_str)
+            except ValueError:
+                priority = models.TaskPriority.medium
+
+            new_task = models.Task(
+                project_id=task.project_id,
+                phase_id=task.phase_id,
+                title=sub.get("title", "Untitled Sub-Task"),
+                description=sub.get("description"),
+                priority=priority,
+                status=models.TaskStatus.waiting,
+                worker_prompt={"prompt": sub.get("worker_prompt", "")},
+                qa_prompt={"prompt": sub.get("qa_prompt", "")},
+                branch_name=task.branch_name,
+            )
+            db.add(new_task)
+
+    await db.commit()
+    await db.refresh(task)
+    # Reload with depends_on
+    refreshed = await task_repo.get_by_id(task.id)
+    if refreshed is None:
+        raise HTTPException(status_code=500, detail="Task refresh failed")
+
+    from backend.src.api.board import _build_task_response
+
+    return _build_task_response(refreshed)
+
+
+# ── 7. Add Task to Existing Project ─────────────────────────────────
 
 
 @router.post(

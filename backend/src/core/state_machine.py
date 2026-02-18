@@ -20,14 +20,13 @@ class TaskStateMachine:
     """State machine for managing task status transitions."""
 
     TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
-        TaskStatus.waiting: {TaskStatus.ready, TaskStatus.blocked},
+        TaskStatus.waiting: {TaskStatus.ready},
         TaskStatus.ready: {TaskStatus.queued},
-        TaskStatus.queued: {TaskStatus.in_progress},
-        TaskStatus.in_progress: {TaskStatus.review, TaskStatus.rejected},
-        TaskStatus.review: {TaskStatus.done, TaskStatus.rejected},
-        TaskStatus.done: {TaskStatus.rejected},
-        TaskStatus.rejected: {TaskStatus.ready},
-        TaskStatus.blocked: {TaskStatus.ready},
+        TaskStatus.queued: {TaskStatus.in_progress, TaskStatus.ready},
+        TaskStatus.in_progress: {TaskStatus.review, TaskStatus.ready, TaskStatus.redesign},
+        TaskStatus.review: {TaskStatus.done, TaskStatus.in_progress, TaskStatus.redesign},
+        TaskStatus.done: set(),
+        TaskStatus.redesign: {TaskStatus.waiting, TaskStatus.done},
     }
 
     def __init__(
@@ -77,7 +76,9 @@ class TaskStateMachine:
         task.version += 1
 
         # 4. Execute side effects
-        await self._execute_side_effects(task, old_status, new_status, db_session, stream_manager, **kwargs)
+        await self._execute_side_effects(
+            task, old_status, new_status, db_session, stream_manager, reason=reason, **kwargs
+        )
 
         # 5. Publish board event
         if stream_manager is not None:
@@ -110,8 +111,7 @@ class TaskStateMachine:
             TaskStatus.in_progress: self._on_in_progress,
             TaskStatus.review: self._on_review,
             TaskStatus.done: self._on_done,
-            TaskStatus.rejected: self._on_rejected,
-            TaskStatus.blocked: self._on_blocked,
+            TaskStatus.redesign: self._on_redesign,
         }
         handler = side_effect_map.get(new_status)
         if handler is not None:
@@ -126,16 +126,13 @@ class TaskStateMachine:
         stream_manager: Optional[RedisStreamManager] = None,
         **kwargs: Any,
     ) -> None:
-        """Reset execution fields when retrying from REJECTED, and unblock dependents."""
-        if old_status == TaskStatus.rejected:
+        """Reset execution fields when retrying from execution failure."""
+        if old_status == TaskStatus.in_progress:
             task.worker_id = None
             task.reviewer_id = None
             task.error_message = None
             task.qa_result = None
-            # Unblock dependents that were blocked due to this task's rejection
-            if db_session is not None:
-                repo = TaskRepository(db_session)
-                await self._unblock_dependents(task, repo, db_session)
+            task.started_at = None
 
     async def _on_queued(
         self,
@@ -182,16 +179,22 @@ class TaskStateMachine:
         **kwargs: Any,
     ) -> None:
         """Set worker_id and started_at timestamp."""
-        worker_id = kwargs.get("worker_id")
-        if worker_id is not None:
-            task.worker_id = worker_id if isinstance(worker_id, uuid.UUID) else uuid.UUID(worker_id)
-        task.started_at = datetime.now(timezone.utc)
+        if old_status == TaskStatus.review:
+            # QA failure auto-retry: keep worker_id, refresh started_at, clear reviewer_id
+            task.started_at = datetime.now(timezone.utc)
+            task.reviewer_id = None
+        else:
+            # Normal first execution from queued
+            worker_id = kwargs.get("worker_id")
+            if worker_id is not None:
+                task.worker_id = worker_id if isinstance(worker_id, uuid.UUID) else uuid.UUID(worker_id)
+            task.started_at = datetime.now(timezone.utc)
 
-        if self.worker_registry and worker_id is not None:
-            try:
-                await self.worker_registry.set_busy(str(worker_id), str(task.id))
-            except Exception:
-                pass  # Redis failure should not block state transition
+            if self.worker_registry and worker_id is not None:
+                try:
+                    await self.worker_registry.set_busy(str(worker_id), str(task.id))
+                except Exception:
+                    pass  # Redis failure should not block state transition
 
     async def _on_review(
         self,
@@ -242,10 +245,7 @@ class TaskStateMachine:
         stream_manager: Optional[RedisStreamManager] = None,
         **kwargs: Any,
     ) -> None:
-        """Set completed_at and promote dependent tasks.
-
-        Note: commit_hash is set by the orchestrator from worker result messages.
-        """
+        """Set completed_at and promote dependent tasks."""
         task.completed_at = datetime.now(timezone.utc)
         if db_session is not None:
             repo = TaskRepository(db_session)
@@ -257,7 +257,7 @@ class TaskStateMachine:
             except Exception:
                 pass  # Redis failure should not block state transition
 
-    async def _on_rejected(
+    async def _on_redesign(
         self,
         task: Task,
         *,
@@ -266,38 +266,33 @@ class TaskStateMachine:
         stream_manager: Optional[RedisStreamManager] = None,
         **kwargs: Any,
     ) -> None:
-        """Set error_message and publish revert request to workers if commit exists."""
+        """Handle escalation to Architect: publish escalation event and release workers."""
         reason = kwargs.get("reason")
         if reason is not None:
             task.error_message = reason
-        # Publish revert request to workers if there's a commit to revert
-        if stream_manager and task.commit_hash and task.branch_name:
-            repo_path = ""
-            if db_session is not None:
-                repo_path = await self._get_repo_path(task, db_session)
-            await stream_manager.publish("tasks:queue", {
-                "type": "revert",
+
+        if stream_manager is not None:
+            await stream_manager.publish(RedisStreamManager.TASKS_ESCALATION, {
                 "task_id": str(task.id),
                 "project_id": str(task.project_id),
-                "commit_hash": task.commit_hash,
-                "branch_name": task.branch_name,
-                "repo_path": repo_path,
+                "title": task.title,
+                "retry_count": str(task.retry_count),
+                "qa_feedback_history": json.dumps(task.qa_feedback_history or []),
+                "error_message": task.error_message or "",
             })
-            task.commit_hash = None
-        if db_session is not None:
-            repo = TaskRepository(db_session)
-            await self._block_dependents(task, repo, db_session)
 
-    async def _on_blocked(
-        self,
-        task: Task,
-        *,
-        old_status: Optional[TaskStatus] = None,
-        db_session: Optional[AsyncSession] = None,
-        stream_manager: Optional[RedisStreamManager] = None,
-        **kwargs: Any,
-    ) -> None:
-        """No-op: blocked tasks wait until blocker is resolved."""
+        # Release worker and reviewer
+        if self.worker_registry:
+            if task.worker_id:
+                try:
+                    await self.worker_registry.set_idle(str(task.worker_id))
+                except Exception:
+                    pass
+            if task.reviewer_id:
+                try:
+                    await self.worker_registry.set_idle(str(task.reviewer_id))
+                except Exception:
+                    pass
 
     async def _get_repo_path(self, task: Task, db_session: AsyncSession) -> str:
         """Look up repo_path from the task's project."""
@@ -307,43 +302,6 @@ class TaskStateMachine:
         project = await project_repo.get_by_id(task.project_id, load_phases=False)
         return project.repo_path if project else ""
 
-    async def _block_dependents(self, task: Task, repo: TaskRepository, db_session: AsyncSession) -> list[Task]:
-        """Transition WAITING dependents to BLOCKED when a task is rejected."""
-        waiting_tasks = await repo.find_waiting_dependents(task.id)
-        blocked: list[Task] = []
-        for waiting_task in waiting_tasks:
-            waiting_task.status = TaskStatus.blocked
-            waiting_task.version += 1
-            history = TaskHistory(
-                task_id=waiting_task.id,
-                from_status=TaskStatus.waiting.value,
-                to_status=TaskStatus.blocked.value,
-                actor="system",
-                reason=f"Dependency {task.id} was rejected",
-            )
-            db_session.add(history)
-            blocked.append(waiting_task)
-        return blocked
-
-    async def _unblock_dependents(self, task: Task, repo: TaskRepository, db_session: AsyncSession) -> list[Task]:
-        """Transition BLOCKED dependents back to WAITING when a rejected task retries."""
-        blocked_tasks = await repo.find_blocked_dependents(task.id)
-        unblocked: list[Task] = []
-        for blocked_task in blocked_tasks:
-            blocked_task.status = TaskStatus.waiting
-            blocked_task.version += 1
-            blocked_task.error_message = None
-            history = TaskHistory(
-                task_id=blocked_task.id,
-                from_status=TaskStatus.blocked.value,
-                to_status=TaskStatus.waiting.value,
-                actor="system",
-                reason=f"Dependency {task.id} is retrying",
-            )
-            db_session.add(history)
-            unblocked.append(blocked_task)
-        return unblocked
-
     # -- Dependency Methods ----------------------------------------------------
 
     async def check_dependencies_met(self, task: Task, db_session: AsyncSession) -> bool:
@@ -352,13 +310,11 @@ class TaskStateMachine:
         return await repo.check_dependencies_met(task.id)
 
     async def _promote_dependents(self, task: Task, repo: TaskRepository, db_session: AsyncSession) -> list[Task]:
-        """Promote WAITING and BLOCKED tasks that depend on the completed task to READY."""
+        """Promote WAITING tasks that depend on the completed task to READY."""
         waiting_tasks = await repo.find_waiting_dependents(task.id)
-        blocked_tasks = await repo.find_blocked_dependents(task.id)
-        candidates = waiting_tasks + blocked_tasks
 
         promoted: list[Task] = []
-        for candidate in candidates:
+        for candidate in waiting_tasks:
             if await repo.check_dependencies_met(candidate.id):
                 old_status = candidate.status
                 candidate.status = TaskStatus.ready

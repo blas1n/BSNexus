@@ -29,8 +29,7 @@ class TaskStatus(str, enum.Enum):
     in_progress = "in_progress"
     review = "review"
     done = "done"
-    rejected = "rejected"
-    blocked = "blocked"
+    redesign = "redesign"
 
 
 class TaskPriority(str, enum.Enum):
@@ -159,6 +158,9 @@ class TaskResponse(BaseModel):
     qa_result: Optional[dict] = None
     output_path: Optional[str] = None
     error_message: Optional[str] = None
+    retry_count: int = 0
+    max_retries: int = 3
+    qa_feedback_history: Optional[list[dict]] = None
     version: int
     created_at: datetime
     updated_at: datetime
@@ -212,6 +214,7 @@ class BoardResponse(BaseModel):
     columns: dict[str, BoardColumn]
     stats: dict[str, int]
     workers: dict[str, int] = Field(default_factory=dict)
+    redesign_tasks: list[TaskResponse] = Field(default_factory=list)
 
 
 # ── Common Schemas ────────────────────────────────────────────────────
@@ -286,6 +289,21 @@ class DesignSessionResponse(BaseModel):
 class FinalizeRequest(BaseModel):
     repo_path: str
     pm_llm_config: Optional[LLMConfigInput] = None
+
+
+class RedesignAction(str, enum.Enum):
+    modify = "modify"
+    delete = "delete"
+    split = "split"
+
+
+class TaskRedesignRequest(BaseModel):
+    action: RedesignAction
+    title: Optional[str] = None
+    description: Optional[str] = None
+    worker_prompt: Optional[str] = None
+    qa_prompt: Optional[str] = None
+    split_tasks: Optional[list[dict]] = None
 
 
 class AddTaskRequest(BaseModel):

@@ -40,6 +40,9 @@ def _build_task_response(task: models.Task) -> schemas.TaskResponse:
         qa_result=task.qa_result,
         output_path=task.output_path,
         error_message=task.error_message,
+        retry_count=task.retry_count,
+        max_retries=task.max_retries,
+        qa_feedback_history=task.qa_feedback_history,
         version=task.version,
         created_at=task.created_at,
         updated_at=task.updated_at,
@@ -61,11 +64,16 @@ async def _get_board_data(
     repo = TaskRepository(db)
     tasks = await repo.list_by_project(pid, limit=500)
 
-    # Group tasks by status
-    columns: dict[str, list] = {status.value: [] for status in models.TaskStatus}
+    # Group tasks by status — redesign tasks go into a separate list
+    kanban_statuses = [s for s in models.TaskStatus if s != models.TaskStatus.redesign]
+    columns: dict[str, list] = {status.value: [] for status in kanban_statuses}
+    redesign_tasks: list[dict] = []
     for task in tasks:
         task_resp = _build_task_response(task)
-        columns[task.status.value].append(task_resp.model_dump(mode="json"))
+        if task.status == models.TaskStatus.redesign:
+            redesign_tasks.append(task_resp.model_dump(mode="json"))
+        else:
+            columns[task.status.value].append(task_resp.model_dump(mode="json"))
 
     # Stats
     status_counts = await repo.count_by_status(pid)
@@ -106,6 +114,7 @@ async def _get_board_data(
         "stats": stats,
         "workers": {"total": len(assigned_ids), "idle": idle, "busy": busy, "offline": offline},
         "phases": phases,
+        "redesign_tasks": redesign_tasks,
     }
 
 
