@@ -6,6 +6,7 @@ from pathlib import Path
 import httpx
 
 from worker.src.config import WorkerConfig
+from worker.src.log import log
 
 
 class WorkerAgent:
@@ -21,6 +22,9 @@ class WorkerAgent:
         """Register this worker with the server. Reuses existing worker_id if available."""
         name = self.config.worker_name or f"worker-{platform.system().lower()}-{socket.gethostname()}"
         capabilities = self._detect_capabilities()
+
+        reuse = bool(self.worker_id)
+        log.info("Registering worker name=%s reuse_id=%s capabilities=%s", name, reuse, capabilities)
 
         payload: dict = {
             "name": name,
@@ -49,9 +53,12 @@ class WorkerAgent:
             self.streams = data["streams"]
             self.consumer_groups = data["consumer_groups"]
 
+        log.info("Registered worker_id=%s streams=%s", self.worker_id, list(self.streams.keys()))
+
     async def heartbeat_loop(self) -> None:
         """Periodically send heartbeat to the server."""
         consecutive_failures = 0
+        log.debug("Heartbeat loop started (interval=%ds)", self.config.heartbeat_interval)
         while self._running:
             await asyncio.sleep(self.config.heartbeat_interval)
             if not self._running:
@@ -63,23 +70,23 @@ class WorkerAgent:
                         headers={"Authorization": f"Bearer {self.token}"},
                     )
                     if response.status_code == 404:
-                        print("Heartbeat 404: worker expired, re-registering...")
+                        log.warning("Heartbeat 404: worker expired, re-registering...")
                         await self._re_register()
                     elif response.status_code >= 400:
                         consecutive_failures += 1
-                        print(f"Heartbeat error: HTTP {response.status_code} ({consecutive_failures} failures)")
+                        log.warning("Heartbeat error: HTTP %d (%d failures)", response.status_code, consecutive_failures)
                     else:
                         consecutive_failures = 0
             except Exception as e:
                 consecutive_failures += 1
-                print(f"Heartbeat failed ({consecutive_failures}): {type(e).__name__}: {e}")
+                log.warning("Heartbeat failed (%d): %s: %s", consecutive_failures, type(e).__name__, e)
                 # Retry once after a short delay
                 if consecutive_failures == 1:
                     await asyncio.sleep(5)
                     continue
                 # Re-register after 3 consecutive failures
                 if consecutive_failures >= 3:
-                    print("Too many heartbeat failures, re-registering...")
+                    log.error("Too many heartbeat failures, re-registering...")
                     await self._re_register()
                     consecutive_failures = 0
 
@@ -87,9 +94,9 @@ class WorkerAgent:
         """Re-register with the server, preserving stream/group info for consumers."""
         try:
             await self.register()
-            print(f"Re-registered as worker {self.worker_id}")
+            log.info("Re-registered as worker %s", self.worker_id)
         except Exception as e:
-            print(f"Re-registration failed: {type(e).__name__}: {e}")
+            log.error("Re-registration failed: %s: %s", type(e).__name__, e)
 
     def _detect_capabilities(self) -> list[str]:
         """Detect execution environment capabilities."""
@@ -104,6 +111,7 @@ class WorkerAgent:
 
     async def shutdown(self) -> None:
         """Graceful shutdown."""
+        log.info("Shutting down worker %s...", self.worker_id)
         self._running = False
         if self.worker_id and self.token:
             try:
@@ -111,5 +119,6 @@ class WorkerAgent:
                     await client.delete(
                         f"{self.config.server_url}/api/v1/workers/{self.worker_id}",
                     )
+                log.info("Worker unregistered from server")
             except Exception:
-                pass
+                log.warning("Failed to unregister worker from server")

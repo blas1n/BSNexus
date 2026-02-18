@@ -1,11 +1,13 @@
 import asyncio
 import json
+import time
 
 import redis.asyncio as redis_lib
 
 from worker.src.agent import WorkerAgent
 from worker.src.executors.base import BaseExecutor
 from worker.src.git_ops import WorkerGitOps
+from worker.src.log import log
 
 
 class TaskConsumer:
@@ -21,46 +23,80 @@ class TaskConsumer:
         return self.agent.worker_id
 
     async def task_loop(self) -> None:
-        """Consume tasks from the task queue."""
+        """Consume tasks from the task queue. Recovers pending messages on startup."""
+        stream = self.agent.streams["tasks_queue"]
+        group = self.agent.consumer_groups["workers"]
+        log.info("Task loop started  stream=%s group=%s", stream, group)
+
+        # Recover any pending messages from a previous crash/restart
+        await self._recover_pending(stream, group)
+
         while self.agent._running:
             try:
                 messages = await self.redis.xreadgroup(  # type: ignore[misc]
-                    groupname=self.agent.consumer_groups["workers"],
+                    groupname=group,
                     consumername=self._worker_id(),
-                    streams={self.agent.streams["tasks_queue"]: ">"},
+                    streams={stream: ">"},
                     count=1,
                     block=30000,
                 )
 
                 if messages:
-                    for stream, entries in messages:
+                    for _stream, entries in messages:
                         for msg_id, data in entries:
                             await self._process_task(msg_id, data)
             except Exception as e:
                 if self.agent._running:
-                    print(f"Task loop error: {e}")
+                    log.error("Task loop error: %s", e)
                     await asyncio.sleep(5)
 
     async def qa_loop(self) -> None:
-        """Consume QA review tasks."""
+        """Consume QA review tasks. Recovers pending messages on startup."""
+        stream = self.agent.streams["tasks_qa"]
+        group = self.agent.consumer_groups["reviewers"]
+        log.info("QA loop started    stream=%s group=%s", stream, group)
+
+        await self._recover_pending(stream, group)
+
         while self.agent._running:
             try:
                 messages = await self.redis.xreadgroup(  # type: ignore[misc]
-                    groupname=self.agent.consumer_groups["reviewers"],
+                    groupname=group,
                     consumername=self._worker_id(),
-                    streams={self.agent.streams["tasks_qa"]: ">"},
+                    streams={stream: ">"},
                     count=1,
                     block=30000,
                 )
 
                 if messages:
-                    for stream, entries in messages:
+                    for _stream, entries in messages:
                         for msg_id, data in entries:
                             await self._process_qa(msg_id, data)
             except Exception as e:
                 if self.agent._running:
-                    print(f"QA loop error: {e}")
+                    log.error("QA loop error: %s", e)
                     await asyncio.sleep(5)
+
+    async def _recover_pending(self, stream: str, group: str) -> None:
+        """Re-read and process any pending messages left from a previous crash."""
+        try:
+            messages = await self.redis.xreadgroup(  # type: ignore[misc]
+                groupname=group,
+                consumername=self._worker_id(),
+                streams={stream: "0"},
+                count=10,
+            )
+            if messages:
+                for _stream_name, entries in messages:
+                    if entries:
+                        log.info("Recovering %d pending message(s) from %s", len(entries), stream)
+                    for msg_id, data in entries:
+                        if stream == self.agent.streams.get("tasks_qa"):
+                            await self._process_qa(msg_id, data)
+                        else:
+                            await self._process_task(msg_id, data)
+        except Exception as e:
+            log.error("Pending recovery error on %s: %s", stream, e)
 
     @staticmethod
     def _decode(value: str | bytes) -> str:
@@ -81,6 +117,9 @@ class TaskConsumer:
         branch_name = self._decode(data.get("branch_name", ""))
         title = self._decode(data.get("title", ""))
 
+        log.info(">>> TASK RECEIVED  task_id=%s title='%s'", task_id, title)
+        log.info("    repo=%s branch=%s", repo_path or "(none)", branch_name or "(none)")
+
         prompt_raw = self._decode(data.get("worker_prompt", "{}"))
 
         try:
@@ -89,6 +128,10 @@ class TaskConsumer:
         except (json.JSONDecodeError, TypeError):
             prompt = prompt_raw
 
+        prompt_preview = prompt[:200].replace("\n", " ")
+        log.info("    prompt: %s%s", prompt_preview, "..." if len(prompt) > 200 else "")
+
+        t0 = time.monotonic()
         try:
             # Initialize git repo and branch
             git_ops = None
@@ -97,21 +140,31 @@ class TaskConsumer:
                 await git_ops.ensure_repo()
                 if branch_name:
                     await git_ops.ensure_branch(branch_name)
+                    log.info("    git: checked out branch %s", branch_name)
 
             # Execute task in repo directory
             context: dict = {"task_id": task_id}
             if repo_path:
                 context["workspace_dir"] = repo_path
 
+            log.info("    executing via %s ...", type(self.executor).__name__)
             result = await self.executor.execute(prompt, context)
+            elapsed = time.monotonic() - t0
 
             # Commit if execution succeeded
             commit_hash = ""
             if result.success and git_ops and branch_name:
                 try:
                     commit_hash = await git_ops.commit_task(task_id, title, branch_name)
+                    log.info("    git: committed %s", commit_hash[:8] if commit_hash else "(no changes)")
                 except RuntimeError:
-                    pass  # Git failure should not fail the task
+                    log.warning("    git: commit failed (non-fatal)")
+
+            if result.success:
+                log.info("<<< TASK DONE      task_id=%s success=true  elapsed=%.1fs", task_id, elapsed)
+            else:
+                log.warning("<<< TASK DONE      task_id=%s success=false elapsed=%.1fs error=%s",
+                            task_id, elapsed, result.error_message or "(unknown)")
 
             await self.redis.xadd(  # type: ignore[misc]
                 self.agent.streams["tasks_results"],
@@ -127,6 +180,8 @@ class TaskConsumer:
                 },
             )
         except Exception as e:
+            elapsed = time.monotonic() - t0
+            log.error("<<< TASK FAILED    task_id=%s elapsed=%.1fs error=%s", task_id, elapsed, e)
             await self.redis.xadd(  # type: ignore[misc]
                 self.agent.streams["tasks_results"],
                 {
@@ -152,12 +207,14 @@ class TaskConsumer:
         commit_hash = self._decode(data.get("commit_hash", ""))
         branch_name = self._decode(data.get("branch_name", ""))
 
+        log.info(">>> REVERT         commit=%s branch=%s", commit_hash[:8] if commit_hash else "?", branch_name)
         try:
             if repo_path and commit_hash and branch_name:
                 git_ops = WorkerGitOps(repo_path)
                 await git_ops.revert_task(commit_hash, branch_name)
-        except RuntimeError:
-            pass  # Revert failure is non-fatal
+                log.info("<<< REVERT DONE    commit=%s", commit_hash[:8])
+        except RuntimeError as e:
+            log.warning("<<< REVERT FAILED  commit=%s error=%s", commit_hash[:8] if commit_hash else "?", e)
         finally:
             await self.redis.xack(  # type: ignore[misc]
                 self.agent.streams["tasks_queue"],
@@ -170,6 +227,8 @@ class TaskConsumer:
         task_id = self._decode(data.get("task_id", ""))
         repo_path = self._decode(data.get("repo_path", ""))
 
+        log.info(">>> QA RECEIVED    task_id=%s repo=%s", task_id, repo_path or "(none)")
+
         prompt_raw = self._decode(data.get("qa_prompt", "{}"))
 
         try:
@@ -178,12 +237,22 @@ class TaskConsumer:
         except (json.JSONDecodeError, TypeError):
             prompt = prompt_raw
 
+        t0 = time.monotonic()
         try:
             context: dict = {"task_id": task_id}
             if repo_path:
                 context["workspace_dir"] = repo_path
 
+            log.info("    reviewing via %s ...", type(self.executor).__name__)
             result = await self.executor.review(prompt, context)
+            elapsed = time.monotonic() - t0
+
+            if result.passed:
+                log.info("<<< QA DONE        task_id=%s passed=true  elapsed=%.1fs", task_id, elapsed)
+            else:
+                feedback_preview = (result.feedback[:120].replace("\n", " ")) if result.feedback else ""
+                log.warning("<<< QA DONE        task_id=%s passed=false elapsed=%.1fs feedback=%s",
+                            task_id, elapsed, feedback_preview)
 
             await self.redis.xadd(  # type: ignore[misc]
                 self.agent.streams["tasks_results"],
@@ -197,6 +266,8 @@ class TaskConsumer:
                 },
             )
         except Exception as e:
+            elapsed = time.monotonic() - t0
+            log.error("<<< QA FAILED      task_id=%s elapsed=%.1fs error=%s", task_id, elapsed, e)
             await self.redis.xadd(  # type: ignore[misc]
                 self.agent.streams["tasks_results"],
                 {

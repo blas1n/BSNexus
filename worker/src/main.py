@@ -9,6 +9,7 @@ from worker.src.agent import WorkerAgent
 from worker.src.config import WorkerConfig
 from worker.src.consumer import TaskConsumer
 from worker.src.executor import create_executor
+from worker.src.log import log
 
 CONFIG_FILE = Path(__file__).resolve().parent.parent / ".env"
 
@@ -46,7 +47,9 @@ async def _run_loop(agent: WorkerAgent, config: WorkerConfig) -> None:
     executor = create_executor(config.executor_type)
     consumer = TaskConsumer(redis_client, agent, executor)
 
-    print(f"Worker {agent.worker_id} listening for tasks... (Ctrl+C to stop)")
+    log.info("Worker %s listening for tasks (executor=%s, heartbeat=%ds)",
+             agent.worker_id, config.executor_type, config.heartbeat_interval)
+    log.info("Server: %s  Redis: %s", config.server_url, config.redis_url)
 
     # Graceful shutdown
     loop = asyncio.get_running_loop()
@@ -77,12 +80,17 @@ async def _run_loop(agent: WorkerAgent, config: WorkerConfig) -> None:
 async def register(config: WorkerConfig) -> None:
     """Register this worker, save credentials, and start the event loop."""
     agent = WorkerAgent(config)
+    # Reuse existing worker_id if previously registered on this machine
+    if config.worker_id:
+        agent.worker_id = config.worker_id
+    if config.worker_token:
+        agent.token = config.worker_token
     await agent.register()
 
     _save_credentials(config, agent)
 
-    print(f"Worker registered: id={agent.worker_id}")
-    print(f"Credentials saved to {CONFIG_FILE}")
+    log.info("Worker registered: id=%s", agent.worker_id)
+    log.info("Credentials saved to %s", CONFIG_FILE)
 
     await _run_loop(agent, config)
 
@@ -90,8 +98,7 @@ async def register(config: WorkerConfig) -> None:
 async def run(config: WorkerConfig) -> None:
     """Start the worker event loop using saved credentials."""
     if not config.worker_id or not config.worker_token:
-        print("Error: No worker credentials found.")
-        print("Run 'bsnexus-worker register' first.")
+        log.error("No worker credentials found. Run 'bsnexus-worker register' first.")
         return
 
     agent = WorkerAgent(config)
