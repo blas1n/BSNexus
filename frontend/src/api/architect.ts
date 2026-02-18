@@ -63,26 +63,32 @@ export const architectApi = {
           buffer = lines.pop() || ''
 
           let currentEvent = ''
+          let dataLines: string[] = []
           for (const line of lines) {
             if (line.startsWith('event:')) {
               currentEvent = line.slice(6).trim()
             } else if (line.startsWith('data:')) {
-              const data = line.slice(5).trim()
-              switch (currentEvent) {
-                case 'chunk':
-                  callbacks.onChunk(data)
-                  break
-                case 'done':
-                  callbacks.onDone(data)
-                  break
-                case 'finalize_ready':
-                  callbacks.onFinalizeReady(data)
-                  break
-                case 'error':
-                  callbacks.onError(data)
-                  break
+              dataLines.push(line.slice(5).trim())
+            } else if (line === '' || line === '\r') {
+              if (currentEvent && dataLines.length > 0) {
+                const data = dataLines.join('\n')
+                switch (currentEvent) {
+                  case 'chunk':
+                    callbacks.onChunk(data)
+                    break
+                  case 'done':
+                    callbacks.onDone(data)
+                    break
+                  case 'finalize_ready':
+                    callbacks.onFinalizeReady(data)
+                    break
+                  case 'error':
+                    callbacks.onError(data)
+                    break
+                }
               }
               currentEvent = ''
+              dataLines = []
             }
           }
         }

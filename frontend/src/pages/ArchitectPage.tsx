@@ -173,7 +173,9 @@ export default function ArchitectPage() {
         const updated = [...state.messages]
         if (updated.length > 0) {
           const last = updated[updated.length - 1]
-          updated[updated.length - 1] = { ...last, content: fullText || last.content, isStreaming: false }
+          const finalContent = fullText && fullText.length >= last.content.length
+            ? fullText : last.content
+          updated[updated.length - 1] = { ...last, content: finalContent, isStreaming: false }
           setMessages(updated)
         }
       },
