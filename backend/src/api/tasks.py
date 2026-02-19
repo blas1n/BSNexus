@@ -76,6 +76,20 @@ async def create_task(
         if await repo.detect_circular_dependency(temp_id, task_data.depends_on):
             raise HTTPException(status_code=400, detail="Circular dependency detected")
 
+    # Determine initial status based on phase and dependencies
+    if task_data.depends_on:
+        initial_status = models.TaskStatus.waiting
+    else:
+        # Only set to ready if the phase is active
+        from backend.src.repositories.phase_repository import PhaseRepository
+
+        phase_repo = PhaseRepository(db)
+        phase = await phase_repo.get_by_id(task_data.phase_id)
+        if phase and phase.status == models.PhaseStatus.active:
+            initial_status = models.TaskStatus.ready
+        else:
+            initial_status = models.TaskStatus.waiting
+
     # Create Task ORM object
     task = Task(
         project_id=task_data.project_id,
@@ -85,11 +99,7 @@ async def create_task(
         priority=models.TaskPriority(task_data.priority.value),
         worker_prompt={"prompt": task_data.worker_prompt},
         qa_prompt={"prompt": task_data.qa_prompt},
-        status=(
-            models.TaskStatus.waiting
-            if task_data.depends_on
-            else models.TaskStatus.ready
-        ),
+        status=initial_status,
         version=1,
     )
     await repo.add(task)

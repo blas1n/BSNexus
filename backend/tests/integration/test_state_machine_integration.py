@@ -1,14 +1,20 @@
 """Integration tests for state machine transitions via the API."""
 from __future__ import annotations
 
+import uuid as uuid_mod
+
 from httpx import AsyncClient
+from sqlalchemy import update
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from backend.src.models import Phase, PhaseStatus
 
 
 # -- Helpers -------------------------------------------------------------------
 
 
-async def _create_project_and_phase(client: AsyncClient) -> tuple[str, str]:
-    """Create a project and phase, return (project_id, phase_id)."""
+async def _create_project_and_phase(client: AsyncClient, db_session: AsyncSession) -> tuple[str, str]:
+    """Create a project and an active phase, return (project_id, phase_id)."""
     project_resp = await client.post(
         "/api/v1/projects",
         json={
@@ -30,6 +36,12 @@ async def _create_project_and_phase(client: AsyncClient) -> tuple[str, str]:
     )
     assert phase_resp.status_code == 201
     phase_id = phase_resp.json()["id"]
+
+    # Activate the phase so tasks can start as ready
+    await db_session.execute(
+        update(Phase).where(Phase.id == uuid_mod.UUID(phase_id)).values(status=PhaseStatus.active)
+    )
+    await db_session.flush()
 
     return project_id, phase_id
 
@@ -62,9 +74,9 @@ async def _create_task(
 # -- Tests ---------------------------------------------------------------------
 
 
-async def test_invalid_transition_rejected(client: AsyncClient):
+async def test_invalid_transition_rejected(client: AsyncClient, db_session: AsyncSession):
     """Try invalid transitions and verify 400 response."""
-    project_id, phase_id = await _create_project_and_phase(client)
+    project_id, phase_id = await _create_project_and_phase(client, db_session)
 
     # Create a task that starts as waiting (has a dependency)
     dep_task = await _create_task(client, project_id, phase_id, "Dep Task")
@@ -99,9 +111,9 @@ async def test_invalid_transition_rejected(client: AsyncClient):
     assert "Invalid transition" in response.json()["detail"]
 
 
-async def test_optimistic_locking_conflict(client: AsyncClient):
+async def test_optimistic_locking_conflict(client: AsyncClient, db_session: AsyncSession):
     """Create task, transition with wrong expected_version, verify 409 response."""
-    project_id, phase_id = await _create_project_and_phase(client)
+    project_id, phase_id = await _create_project_and_phase(client, db_session)
     task = await _create_task(client, project_id, phase_id, "Locking Task")
     assert task["version"] == 1
 
@@ -140,9 +152,9 @@ async def test_optimistic_locking_conflict(client: AsyncClient):
     assert "Version conflict" in response.json()["detail"]
 
 
-async def test_execution_failure_auto_retry_via_api(client: AsyncClient):
+async def test_execution_failure_auto_retry_via_api(client: AsyncClient, db_session: AsyncSession):
     """Test the in_progress -> ready transition for execution failure auto-retry."""
-    project_id, phase_id = await _create_project_and_phase(client)
+    project_id, phase_id = await _create_project_and_phase(client, db_session)
     task = await _create_task(client, project_id, phase_id, "Retry Task")
     assert task["status"] == "ready"
 
@@ -173,9 +185,9 @@ async def test_execution_failure_auto_retry_via_api(client: AsyncClient):
     assert final_task["error_message"] is None
 
 
-async def test_done_is_terminal(client: AsyncClient):
+async def test_done_is_terminal(client: AsyncClient, db_session: AsyncSession):
     """Verify that done is a terminal state."""
-    project_id, phase_id = await _create_project_and_phase(client)
+    project_id, phase_id = await _create_project_and_phase(client, db_session)
     task = await _create_task(client, project_id, phase_id, "Terminal Task")
 
     # Move through: ready -> queued -> in_progress -> review -> done

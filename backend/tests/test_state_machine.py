@@ -415,7 +415,10 @@ async def test_promote_dependents_on_done(
     task = make_task(status=TaskStatus.review)
     waiting_task = make_task(status=TaskStatus.waiting)
 
-    with patch("backend.src.core.state_machine.TaskRepository") as MockRepo:
+    with (
+        patch("backend.src.core.state_machine.TaskRepository") as MockRepo,
+        patch.object(state_machine, "_is_phase_active", return_value=True),
+    ):
         mock_repo_instance = AsyncMock()
         mock_repo_instance.find_waiting_dependents = AsyncMock(return_value=[waiting_task])
         mock_repo_instance.check_dependencies_met = AsyncMock(return_value=True)
@@ -437,7 +440,10 @@ async def test_promote_dependents_only_when_all_deps_met(
     task = make_task(status=TaskStatus.review)
     waiting_task = make_task(status=TaskStatus.waiting)
 
-    with patch("backend.src.core.state_machine.TaskRepository") as MockRepo:
+    with (
+        patch("backend.src.core.state_machine.TaskRepository") as MockRepo,
+        patch.object(state_machine, "_is_phase_active", return_value=True),
+    ):
         mock_repo_instance = AsyncMock()
         mock_repo_instance.find_waiting_dependents = AsyncMock(return_value=[waiting_task])
         mock_repo_instance.check_dependencies_met = AsyncMock(return_value=False)
@@ -446,6 +452,29 @@ async def test_promote_dependents_only_when_all_deps_met(
         await state_machine.transition(task, TaskStatus.done, db_session=mock_db, stream_manager=mock_stream)
 
     # Not promoted because dependencies are not met
+    assert waiting_task.status == TaskStatus.waiting
+    assert waiting_task.version == 1
+
+
+async def test_promote_dependents_skips_non_active_phase(
+    state_machine: TaskStateMachine, mock_db: AsyncMock, mock_stream: AsyncMock
+) -> None:
+    """A waiting dependent in a non-active phase is NOT promoted even if deps are met."""
+    task = make_task(status=TaskStatus.review)
+    waiting_task = make_task(status=TaskStatus.waiting)
+
+    with (
+        patch("backend.src.core.state_machine.TaskRepository") as MockRepo,
+        patch.object(state_machine, "_is_phase_active", return_value=False),
+    ):
+        mock_repo_instance = AsyncMock()
+        mock_repo_instance.find_waiting_dependents = AsyncMock(return_value=[waiting_task])
+        mock_repo_instance.check_dependencies_met = AsyncMock(return_value=True)
+        MockRepo.return_value = mock_repo_instance
+
+        await state_machine.transition(task, TaskStatus.done, db_session=mock_db, stream_manager=mock_stream)
+
+    # Not promoted because phase is not active
     assert waiting_task.status == TaskStatus.waiting
     assert waiting_task.version == 1
 

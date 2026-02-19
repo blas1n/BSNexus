@@ -99,12 +99,13 @@ async def _get_board_data(
     busy = sum(1 for w in workers if w.get("status") == "busy")
     offline = len(assigned_ids) - len(workers)
 
-    # Phase lookup: id -> {name, order}
+    # Phase lookup: id -> {name, order, status}
     phase_result = await db.execute(
-        select(models.Phase.id, models.Phase.name, models.Phase.order).where(models.Phase.project_id == pid)
+        select(models.Phase.id, models.Phase.name, models.Phase.order, models.Phase.status)
+        .where(models.Phase.project_id == pid)
     )
     phases = {
-        str(row.id): {"name": row.name, "order": row.order}
+        str(row.id): {"name": row.name, "order": row.order, "status": row.status.value}
         for row in phase_result.all()
     }
 

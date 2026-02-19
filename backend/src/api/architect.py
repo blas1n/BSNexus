@@ -436,6 +436,11 @@ async def finalize_design(
     # Create phases and tasks, collecting all tasks in a flat list for dependency resolution
     all_tasks: list[models.Task] = []
     phases_data = result.get("phases", [])
+    phases_by_order: dict[int, models.Phase] = {}
+
+    # Track which flat indices belong to each phase
+    phase_task_indices: dict[int, set[int]] = {}  # phase_order -> set of flat indices
+    flat_idx_counter = 0
 
     for phase_order, phase_data in enumerate(phases_data, start=1):
         phase_name = phase_data.get("name", f"Phase {phase_order}")
@@ -450,7 +455,9 @@ async def finalize_design(
         )
         db.add(phase)
         await db.flush()
+        phases_by_order[phase_order] = phase
 
+        task_indices: set[int] = set()
         for task_data in phase_data.get("tasks", []):
             priority_str = task_data.get("priority", "medium")
             try:
@@ -471,6 +478,10 @@ async def finalize_design(
             db.add(task)
             await db.flush()
             all_tasks.append(task)
+            task_indices.add(flat_idx_counter)
+            flat_idx_counter += 1
+
+        phase_task_indices[phase_order] = task_indices
 
     # Wire up dependencies using depends_on_indices
     task_repo = TaskRepository(db)
@@ -490,10 +501,14 @@ async def finalize_design(
                     tasks_with_deps.add(flat_index)
             flat_index += 1
 
-    # Promote dependency-free tasks to ready
-    for i, task in enumerate(all_tasks):
-        if i not in tasks_with_deps:
-            task.status = models.TaskStatus.ready
+    # Phase-gated task status: only first phase is active, its dep-free tasks are ready
+    if phases_by_order:
+        phases_by_order[1].status = models.PhaseStatus.active
+        first_phase_indices = phase_task_indices.get(1, set())
+        for i, task in enumerate(all_tasks):
+            if i not in tasks_with_deps and i in first_phase_indices:
+                task.status = models.TaskStatus.ready
+            # All other tasks remain in default waiting status
 
     # Assign worker to project if session had a worker selected
     if session.worker_id:

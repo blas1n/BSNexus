@@ -68,6 +68,7 @@ export interface BoardColumn {
 export interface PhaseInfo {
   name: string
   order: number
+  status: 'pending' | 'active' | 'completed'
 }
 
 export interface BoardResponse {

@@ -4,7 +4,7 @@ import uuid
 
 from sqlalchemy import func, select
 
-from backend.src.models import Phase
+from backend.src.models import Phase, PhaseStatus, Task, TaskStatus
 from backend.src.repositories.base import BaseRepository
 
 
@@ -27,4 +27,38 @@ class PhaseRepository(BaseRepository):
             select(func.coalesce(func.max(Phase.order), 0)).where(Phase.project_id == project_id)
         )
         return result.scalar_one() + 1
+
+    async def get_active_phase(self, project_id: uuid.UUID) -> Phase | None:
+        """Get the active phase for a project (at most one)."""
+        result = await self.db.execute(
+            select(Phase).where(Phase.project_id == project_id, Phase.status == PhaseStatus.active)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_first_pending_phase(self, project_id: uuid.UUID) -> Phase | None:
+        """Get the pending phase with the lowest order value."""
+        result = await self.db.execute(
+            select(Phase)
+            .where(Phase.project_id == project_id, Phase.status == PhaseStatus.pending)
+            .order_by(Phase.order.asc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_next_pending_phase(self, project_id: uuid.UUID, current_order: int) -> Phase | None:
+        """Get the next pending phase after the given order."""
+        result = await self.db.execute(
+            select(Phase)
+            .where(Phase.project_id == project_id, Phase.status == PhaseStatus.pending, Phase.order > current_order)
+            .order_by(Phase.order.asc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    async def count_incomplete_tasks(self, phase_id: uuid.UUID) -> int:
+        """Count tasks in the phase that are not done."""
+        result = await self.db.execute(
+            select(func.count(Task.id)).where(Task.phase_id == phase_id, Task.status != TaskStatus.done)
+        )
+        return result.scalar_one()
 

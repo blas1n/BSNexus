@@ -108,6 +108,7 @@ async def test_list_ready_by_priority_sorted(orchestrator: PMOrchestrator) -> No
     ) as MockRepo:
         mock_repo_instance = AsyncMock()
         mock_repo_instance.list_ready_by_priority = AsyncMock(return_value=sorted_tasks)
+        mock_repo_instance.count_active_tasks = AsyncMock(return_value=0)
         MockRepo.return_value = mock_repo_instance
 
         result = await orchestrator.queue_next(project_id, mock_db)
@@ -552,6 +553,7 @@ async def test_queue_next_queues_highest_priority(
     with patch("backend.src.core.orchestrator.TaskRepository") as MockRepo:
         mock_repo_instance = AsyncMock()
         mock_repo_instance.list_ready_by_priority = AsyncMock(return_value=[critical_task, low_task])
+        mock_repo_instance.count_active_tasks = AsyncMock(return_value=0)
         MockRepo.return_value = mock_repo_instance
 
         result = await orchestrator.queue_next(project_id, mock_db)
@@ -574,11 +576,30 @@ async def test_queue_next_returns_none_when_no_ready_tasks(
     with patch("backend.src.core.orchestrator.TaskRepository") as MockRepo:
         mock_repo_instance = AsyncMock()
         mock_repo_instance.list_ready_by_priority = AsyncMock(return_value=[])
+        mock_repo_instance.count_active_tasks = AsyncMock(return_value=0)
         MockRepo.return_value = mock_repo_instance
 
         result = await orchestrator.queue_next(project_id, mock_db)
 
     assert result is None
+
+
+async def test_queue_next_returns_none_when_task_already_active(
+    orchestrator: PMOrchestrator, mock_state_machine: AsyncMock
+) -> None:
+    """queue_next should return None when a task is already in progress (sequential constraint)."""
+    project_id = uuid.uuid4()
+    mock_db = AsyncMock()
+
+    with patch("backend.src.core.orchestrator.TaskRepository") as MockRepo:
+        mock_repo_instance = AsyncMock()
+        mock_repo_instance.count_active_tasks = AsyncMock(return_value=1)
+        MockRepo.return_value = mock_repo_instance
+
+        result = await orchestrator.queue_next(project_id, mock_db)
+
+    assert result is None
+    mock_state_machine.transition.assert_not_called()
 
 
 # -- stop ----------------------------------------------------------------------

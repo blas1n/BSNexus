@@ -9,9 +9,10 @@ if TYPE_CHECKING:
     from backend.src.core.prompt_security import PromptSigner
     from backend.src.utils.worker_registry import WorkerRegistry
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.src.models import Task, TaskHistory, TaskStatus
+from backend.src.models import Phase, PhaseStatus, Task, TaskHistory, TaskStatus
 from backend.src.queue.streams import RedisStreamManager
 from backend.src.repositories.task_repository import TaskRepository
 
@@ -310,11 +311,16 @@ class TaskStateMachine:
         return await repo.check_dependencies_met(task.id)
 
     async def _promote_dependents(self, task: Task, repo: TaskRepository, db_session: AsyncSession) -> list[Task]:
-        """Promote WAITING tasks that depend on the completed task to READY."""
+        """Promote WAITING tasks that depend on the completed task to READY.
+
+        Only promotes tasks whose phase is currently active.
+        """
         waiting_tasks = await repo.find_waiting_dependents(task.id)
 
         promoted: list[Task] = []
         for candidate in waiting_tasks:
+            if not await self._is_phase_active(candidate.phase_id, db_session):
+                continue
             if await repo.check_dependencies_met(candidate.id):
                 old_status = candidate.status
                 candidate.status = TaskStatus.ready
@@ -331,6 +337,14 @@ class TaskStateMachine:
                 promoted.append(candidate)
 
         return promoted
+
+    async def _is_phase_active(self, phase_id: uuid.UUID, db_session: AsyncSession) -> bool:
+        """Check if the given phase is in active status."""
+        result = await db_session.execute(
+            select(Phase.status).where(Phase.id == phase_id)
+        )
+        status = result.scalar_one_or_none()
+        return status == PhaseStatus.active
 
     async def promote_dependents(self, task: Task, db_session: AsyncSession) -> list[Task]:
         """Promote WAITING tasks that depend on the completed task to READY (public API)."""

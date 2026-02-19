@@ -155,3 +155,18 @@ class TaskRepository(BaseRepository):
         tasks.sort(key=lambda t: PRIORITY_ORDER.get(t.priority, 99))
         return tasks
 
+    async def count_active_tasks(self, project_id: uuid.UUID) -> int:
+        """Count tasks in queued, in_progress, or review status for a project."""
+        active_statuses = [TaskStatus.queued, TaskStatus.in_progress, TaskStatus.review]
+        result = await self.db.execute(
+            select(func.count(Task.id)).where(Task.project_id == project_id, Task.status.in_(active_statuses))
+        )
+        return result.scalar_one()
+
+    async def list_waiting_in_phase(self, phase_id: uuid.UUID) -> list[Task]:
+        """Get waiting tasks within a specific phase."""
+        result = await self.db.execute(
+            select(Task).where(Task.phase_id == phase_id, Task.status == TaskStatus.waiting)
+        )
+        return list(result.scalars().all())
+

@@ -10,8 +10,9 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.src.core.state_machine import TaskStateMachine
-from backend.src.models import Task, TaskStatus
+from backend.src.models import PhaseStatus, Task, TaskStatus
 from backend.src.queue.streams import RedisStreamManager
+from backend.src.repositories.phase_repository import PhaseRepository
 from backend.src.repositories.task_repository import TaskRepository
 from backend.src.utils.worker_registry import WorkerRegistry
 
@@ -43,40 +44,68 @@ class PMOrchestrator:
         )
 
     async def _promote_waiting_tasks(self, project_id: uuid.UUID, db_session_factory: Any) -> None:
-        """Promote WAITING tasks whose dependencies are all met to READY."""
+        """Promote WAITING tasks in the active phase whose dependencies are all met to READY."""
         try:
             async with db_session_factory() as db:
-                repo = TaskRepository(db)
-                waiting_tasks = await repo.list_by_project(project_id, status=TaskStatus.waiting, limit=500)
-                for task in waiting_tasks:
-                    if await repo.check_dependencies_met(task.id):
-                        await self.state_machine.transition(
-                            task=task,
-                            new_status=TaskStatus.ready,
-                            reason="All dependencies met",
-                            actor="system",
-                            db_session=db,
-                            stream_manager=self.stream_manager,
-                        )
+                await self._promote_waiting_tasks_inner(project_id, db)
                 await db.commit()
         except Exception:
             logger.exception("Promote waiting tasks error")
+
+    async def _promote_waiting_tasks_inner(self, project_id: uuid.UUID, db: AsyncSession) -> None:
+        """Promote WAITING tasks in the active phase (uses existing db session)."""
+        phase_repo = PhaseRepository(db)
+        task_repo = TaskRepository(db)
+
+        active_phase = await phase_repo.get_active_phase(project_id)
+        if active_phase is None:
+            first_pending = await phase_repo.get_first_pending_phase(project_id)
+            if first_pending is None:
+                return
+            first_pending.status = PhaseStatus.active
+            active_phase = first_pending
+
+        waiting_tasks = await task_repo.list_waiting_in_phase(active_phase.id)
+        for task in waiting_tasks:
+            if await task_repo.check_dependencies_met(task.id):
+                await self.state_machine.transition(
+                    task=task,
+                    new_status=TaskStatus.ready,
+                    reason="All dependencies met",
+                    actor="system",
+                    db_session=db,
+                    stream_manager=self.stream_manager,
+                )
 
     async def stop(self) -> None:
         """Stop orchestration."""
         self._running = False
 
     async def _scheduling_loop(self, project_id: uuid.UUID, db_session_factory: Any) -> None:
-        """Schedule READY tasks to the queue based on idle workers."""
+        """Schedule READY tasks one at a time per project (sequential execution)."""
         while self._running:
             try:
                 async with db_session_factory() as db:
                     repo = TaskRepository(db)
+
+                    # Sequential constraint: only one task at a time per project
+                    active_count = await repo.count_active_tasks(project_id)
+                    if active_count > 0:
+                        await asyncio.sleep(5)
+                        continue
+
+                    # Check phase completion and advance to next phase if needed
+                    await self._check_and_advance_phase(project_id, db)
+
+                    # Promote waiting tasks in the active phase
+                    await self._promote_waiting_tasks_inner(project_id, db)
+
                     ready_tasks = await repo.list_ready_by_priority(project_id)
                     workers = await self.registry.get_all_workers()
                     idle_workers = [w for w in workers if w["status"] == "idle"]
 
-                    for task in ready_tasks[: len(idle_workers)]:
+                    if ready_tasks and idle_workers:
+                        task = ready_tasks[0]
                         await self.state_machine.transition(
                             task=task,
                             new_status=TaskStatus.queued,
@@ -91,6 +120,43 @@ class PMOrchestrator:
                 logger.exception("Scheduling loop error")
 
             await asyncio.sleep(5)
+
+    async def _check_and_advance_phase(self, project_id: uuid.UUID, db: AsyncSession) -> None:
+        """Check if active phase is complete and advance to the next phase."""
+        phase_repo = PhaseRepository(db)
+        active_phase = await phase_repo.get_active_phase(project_id)
+        if active_phase is None:
+            return
+
+        incomplete = await phase_repo.count_incomplete_tasks(active_phase.id)
+        if incomplete > 0:
+            return
+
+        # Phase completed
+        active_phase.status = PhaseStatus.completed
+        await self.stream_manager.publish_board_event(
+            "phase_completed",
+            {
+                "phase_id": str(active_phase.id),
+                "project_id": str(project_id),
+                "phase_name": active_phase.name,
+                "phase_order": str(active_phase.order),
+            },
+        )
+
+        # Activate next phase
+        next_phase = await phase_repo.get_next_pending_phase(project_id, active_phase.order)
+        if next_phase is not None:
+            next_phase.status = PhaseStatus.active
+            await self.stream_manager.publish_board_event(
+                "phase_activated",
+                {
+                    "phase_id": str(next_phase.id),
+                    "project_id": str(project_id),
+                    "phase_name": next_phase.name,
+                    "phase_order": str(next_phase.order),
+                },
+            )
 
     async def _results_loop(self, project_id: uuid.UUID, db_session_factory: Any) -> None:
         """Consume task results and process them."""
@@ -289,8 +355,14 @@ class PMOrchestrator:
         )
 
     async def queue_next(self, project_id: uuid.UUID, db: AsyncSession) -> Task | None:
-        """Manually queue the next ready task."""
+        """Manually queue the next ready task (respects sequential constraint)."""
         repo = TaskRepository(db)
+
+        # Sequential constraint: only one task at a time per project
+        active_count = await repo.count_active_tasks(project_id)
+        if active_count > 0:
+            return None
+
         ready_tasks = await repo.list_ready_by_priority(project_id)
         if ready_tasks:
             task = ready_tasks[0]
