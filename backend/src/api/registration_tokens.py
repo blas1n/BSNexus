@@ -48,7 +48,6 @@ async def create_registration_token(
         "expires_at": token.expires_at.isoformat() if token.expires_at else None,
         "revoked": token.revoked,
         "server_url": server_url,
-        "redis_url": settings.redis_url,
     }
 
 

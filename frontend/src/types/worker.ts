@@ -33,7 +33,6 @@ export interface RegistrationToken {
   expires_at: string | null
   revoked: boolean
   server_url?: string
-  redis_url?: string
 }
 
 export interface RegistrationTokenCreate {
