@@ -10,6 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from backend.src.main import app
 from backend.src.storage.database import Base, get_db
 
+# Import all models so Base.metadata.create_all picks them up
+import backend.src.models  # noqa: F401
+import backend.src.core.audit_logger  # noqa: F401
+import backend.src.core.access_control  # noqa: F401
+import backend.src.core.compliance  # noqa: F401
+
 TEST_DATABASE_URL = "sqlite+aiosqlite://"
 
 
@@ -59,6 +65,9 @@ async def client(db_session, mock_stream_manager):
 
     app.dependency_overrides[get_db] = override_get_db
     app.state.stream_manager = mock_stream_manager
+
+    # Disable rate limiting in tests to prevent cross-test interference
+    app.state.rate_limit_disabled = True
 
     async with AsyncClient(
         transport=ASGITransport(app=app),

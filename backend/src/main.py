@@ -4,7 +4,21 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
-from backend.src.api import architect, board, dashboard, pm, projects, registration_tokens, settings, tasks, workers
+from backend.src.api import (
+    architect,
+    board,
+    dashboard,
+    pm,
+    projects,
+    registration_tokens,
+    security,
+    settings,
+    tasks,
+    workers,
+)
+from backend.src.config import settings as app_settings
+from backend.src.core.rate_limiter import RateLimitMiddleware
+from backend.src.core.security_headers import SecurityHeadersMiddleware
 from backend.src.queue.background import start_background_consumer
 from backend.src.queue.streams import RedisStreamManager
 from backend.src.storage.database import init_db, engine
@@ -37,10 +51,21 @@ app = FastAPI(
     redirect_slashes=False,
 )
 
+# Security headers (outermost — runs first on response)
+app.add_middleware(
+    SecurityHeadersMiddleware,
+    enable_hsts=app_settings.enable_hsts,
+    hsts_max_age=app_settings.hsts_max_age,
+)
+
+# Rate limiting
+if app_settings.rate_limit_enabled:
+    app.add_middleware(RateLimitMiddleware)
+
 # CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Restrict in production
+    allow_origins=app_settings.cors_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -88,3 +113,4 @@ app.include_router(board.router)
 app.include_router(dashboard.router)
 app.include_router(settings.router)
 app.include_router(registration_tokens.router)
+app.include_router(security.router)

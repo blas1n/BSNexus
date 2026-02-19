@@ -385,3 +385,80 @@ class RegistrationTokenResponse(BaseModel):
     created_at: datetime
     expires_at: Optional[datetime] = None
     revoked: bool
+
+
+# ── Security Schemas ───────────────────────────────────────────────
+
+
+class SecurityFindingResponse(BaseModel):
+    category: str
+    severity: str
+    title: str
+    description: str
+    recommendation: str
+    affected_component: Optional[str] = None
+
+
+class SecurityReportResponse(BaseModel):
+    scan_timestamp: datetime
+    passed: bool
+    summary: dict[str, int]
+    findings: list[SecurityFindingResponse]
+
+
+class AuditLogResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    timestamp: datetime
+    action: str
+    severity: str
+    actor_id: Optional[str] = None
+    actor_type: Optional[str] = None
+    resource_type: Optional[str] = None
+    resource_id: Optional[str] = None
+    ip_address: Optional[str] = None
+    details: Optional[dict] = None
+    request_path: Optional[str] = None
+    request_method: Optional[str] = None
+
+
+class AuditLogListResponse(BaseModel):
+    total: int
+    items: list[AuditLogResponse]
+
+
+class ComplianceReportResponse(BaseModel):
+    generated_at: str
+    frameworks: list[str]
+    overall_status: str
+    summary: dict[str, int]
+    checks: list[dict]
+
+
+class APIKeyCreateRequest(BaseModel):
+    name: str
+    role: str = "viewer"
+    expires_in_days: Optional[int] = None
+
+
+class APIKeyCreateResponse(BaseModel):
+    id: uuid.UUID
+    name: str
+    key: str
+    role: str
+    created_at: datetime
+    expires_at: Optional[datetime] = None
+
+
+class APIKeyResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    key_prefix: str
+    role: str
+    is_active: bool
+    created_at: datetime
+    expires_at: Optional[datetime] = None
+    last_used_at: Optional[datetime] = None
