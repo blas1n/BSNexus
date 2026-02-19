@@ -27,23 +27,40 @@ class TestEnsureRepo:
         mock_run.assert_any_await("checkout", "-b", "main")
 
     async def test_ensure_repo_skips_existing(self, git_ops: WorkerGitOps) -> None:
-        """ensure_repo() should be a no-op if repo already exists."""
+        """ensure_repo() should only verify main when repo already exists."""
         with patch.object(git_ops, "_is_git_repo", return_value=True) as mock_check, \
              patch.object(git_ops, "_run", new_callable=AsyncMock) as mock_run:
             await git_ops.ensure_repo()
 
         mock_check.assert_awaited_once()
-        mock_run.assert_not_awaited()
+        mock_run.assert_awaited_once_with("rev-parse", "--verify", "main")
+
+    async def test_ensure_repo_recovers_partial_init(self, git_ops: WorkerGitOps) -> None:
+        """ensure_repo() should create main + empty commit when repo exists but main has no commits."""
+        with patch.object(git_ops, "_is_git_repo", return_value=True), \
+             patch.object(git_ops, "_run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [
+                RuntimeError("fatal: Needed a single revision"),  # rev-parse --verify main
+                "",  # checkout -b main
+                "",  # commit --allow-empty
+            ]
+            await git_ops.ensure_repo()
+
+        assert mock_run.await_count == 3
+        mock_run.assert_any_await("rev-parse", "--verify", "main")
+        mock_run.assert_any_await("checkout", "-b", "main")
+        mock_run.assert_any_await("commit", "--allow-empty", "-m", "chore: initialize repository")
 
 
 class TestEnsureBranch:
     async def test_ensure_branch_creates_new(self, git_ops: WorkerGitOps) -> None:
         """ensure_branch() should create a new branch from main if it doesn't exist."""
         with patch.object(git_ops, "_run", new_callable=AsyncMock) as mock_run:
-            mock_run.return_value = ""  # branch --list returns empty
+            mock_run.return_value = ""  # branch --list returns empty, rev-parse succeeds
             await git_ops.ensure_branch("phase/auth")
 
         mock_run.assert_any_await("branch", "--list", "phase/auth")
+        mock_run.assert_any_await("rev-parse", "--verify", "main")
         mock_run.assert_any_await("checkout", "-b", "phase/auth", "main")
 
     async def test_ensure_branch_checks_out_existing(self, git_ops: WorkerGitOps) -> None:
@@ -54,6 +71,20 @@ class TestEnsureBranch:
 
         mock_run.assert_any_await("branch", "--list", "phase/auth")
         mock_run.assert_any_await("checkout", "phase/auth")
+
+    async def test_ensure_branch_fallback_no_main(self, git_ops: WorkerGitOps) -> None:
+        """ensure_branch() should branch from HEAD when main is not a valid ref."""
+        with patch.object(git_ops, "_run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [
+                "",  # branch --list returns empty
+                RuntimeError("fatal: 'main' is not a commit"),  # rev-parse --verify main
+                "",  # checkout -b phase/auth (from HEAD)
+            ]
+            await git_ops.ensure_branch("phase/auth")
+
+        mock_run.assert_any_await("branch", "--list", "phase/auth")
+        mock_run.assert_any_await("rev-parse", "--verify", "main")
+        mock_run.assert_any_await("checkout", "-b", "phase/auth")
 
 
 class TestCommitTask:

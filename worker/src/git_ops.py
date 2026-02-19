@@ -15,6 +15,12 @@ class WorkerGitOps:
     async def ensure_repo(self) -> None:
         """Initialize git repo if it doesn't exist."""
         if await self._is_git_repo():
+            # Guard: repo dir exists but main may lack commits (partial init / race)
+            try:
+                await self._run("rev-parse", "--verify", "main")
+            except RuntimeError:
+                await self._run("checkout", "-b", "main")
+                await self._run("commit", "--allow-empty", "-m", "chore: initialize repository")
             return
         Path(self.repo_path).mkdir(parents=True, exist_ok=True)
         await self._run("init", self.repo_path)
@@ -29,7 +35,11 @@ class WorkerGitOps:
         if branch_name.strip() in branches:
             await self._run("checkout", branch_name)
         else:
-            await self._run("checkout", "-b", branch_name, "main")
+            try:
+                await self._run("rev-parse", "--verify", "main")
+                await self._run("checkout", "-b", branch_name, "main")
+            except RuntimeError:
+                await self._run("checkout", "-b", branch_name)
 
     async def commit_task(self, task_id: str, title: str, branch_name: str) -> str:
         """Stage all changes and commit. Returns the commit hash."""
