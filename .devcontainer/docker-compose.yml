@@ -24,6 +24,7 @@ services:
       - CLAUDE_CONFIG_DIR=/home/vscode/.claude
       - LANG=C.UTF-8
       - LC_ALL=C.UTF-8
+      - UV_LINK_MODE=copy
     stdin_open: true
     tty: true
     command: >
