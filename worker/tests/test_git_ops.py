@@ -2,7 +2,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from worker.src.git_ops import WorkerGitOps
+from worker.git_ops import WorkerGitOps
 
 
 @pytest.fixture
@@ -15,7 +15,7 @@ class TestEnsureRepo:
         """ensure_repo() should init a new git repo when none exists."""
         with patch.object(git_ops, "_is_git_repo", return_value=False) as mock_check, \
              patch.object(git_ops, "_run", new_callable=AsyncMock) as mock_run, \
-             patch("worker.src.git_ops.Path") as mock_path:
+             patch("worker.git_ops.Path") as mock_path:
             mock_path.return_value.mkdir = lambda **kwargs: None
             await git_ops.ensure_repo()
 
@@ -98,7 +98,7 @@ class TestIsGitRepo:
         mock_process.returncode = 0
         mock_process.communicate = AsyncMock(return_value=(b".git", b""))
 
-        with patch("worker.src.git_ops.asyncio.create_subprocess_exec", return_value=mock_process):
+        with patch("worker.git_ops.asyncio.create_subprocess_exec", return_value=mock_process):
             assert await git_ops._is_git_repo() is True
 
     async def test_is_git_repo_false(self) -> None:
@@ -108,12 +108,12 @@ class TestIsGitRepo:
         mock_process.returncode = 128
         mock_process.communicate = AsyncMock(return_value=(b"", b"not a git repo"))
 
-        with patch("worker.src.git_ops.asyncio.create_subprocess_exec", return_value=mock_process):
+        with patch("worker.git_ops.asyncio.create_subprocess_exec", return_value=mock_process):
             assert await git_ops._is_git_repo() is False
 
     async def test_is_git_repo_file_not_found(self) -> None:
         """_is_git_repo() should return False when git command not found."""
         git_ops = WorkerGitOps("/tmp/test")
 
-        with patch("worker.src.git_ops.asyncio.create_subprocess_exec", side_effect=FileNotFoundError):
+        with patch("worker.git_ops.asyncio.create_subprocess_exec", side_effect=FileNotFoundError):
             assert await git_ops._is_git_repo() is False

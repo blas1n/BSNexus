@@ -5,8 +5,8 @@ from pathlib import Path
 
 import httpx
 
-from worker.src.config import WorkerConfig
-from worker.src.log import log
+from worker.config import WorkerConfig
+from worker.log import log
 
 
 class WorkerAgent:

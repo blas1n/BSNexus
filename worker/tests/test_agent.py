@@ -2,8 +2,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from worker.src.agent import WorkerAgent
-from worker.src.config import WorkerConfig
+from worker.agent import WorkerAgent
+from worker.config import WorkerConfig
 
 
 @pytest.fixture
@@ -50,7 +50,7 @@ class TestWorkerAgentRegister:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("worker.src.agent.httpx.AsyncClient", return_value=mock_client):
+        with patch("worker.agent.httpx.AsyncClient", return_value=mock_client):
             await agent.register()
 
         assert agent.worker_id == "test-worker-id-123"
@@ -76,7 +76,7 @@ class TestWorkerAgentRegister:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("worker.src.agent.httpx.AsyncClient", return_value=mock_client):
+        with patch("worker.agent.httpx.AsyncClient", return_value=mock_client):
             await agent.register()
 
         call_args = mock_client.post.call_args
@@ -112,8 +112,8 @@ class TestWorkerAgentHeartbeat:
             await original_sleep(0)
 
         with (
-            patch("worker.src.agent.httpx.AsyncClient", return_value=mock_client),
-            patch("worker.src.agent.asyncio.sleep", side_effect=fake_sleep),
+            patch("worker.agent.httpx.AsyncClient", return_value=mock_client),
+            patch("worker.agent.asyncio.sleep", side_effect=fake_sleep),
         ):
             await agent.heartbeat_loop()
 
@@ -151,8 +151,8 @@ class TestWorkerAgentHeartbeat:
             await original_sleep(0)
 
         with (
-            patch("worker.src.agent.httpx.AsyncClient", return_value=mock_client),
-            patch("worker.src.agent.asyncio.sleep", side_effect=fake_sleep),
+            patch("worker.agent.httpx.AsyncClient", return_value=mock_client),
+            patch("worker.agent.asyncio.sleep", side_effect=fake_sleep),
         ):
             await agent.heartbeat_loop()
 
@@ -170,13 +170,13 @@ class TestWorkerAgentCapabilities:
 
     def test_detect_capabilities_includes_docker(self, agent: WorkerAgent) -> None:
         """_detect_capabilities() should include 'docker' when /.dockerenv exists."""
-        with patch("worker.src.agent.Path.exists", return_value=True):
+        with patch("worker.agent.Path.exists", return_value=True):
             capabilities = agent._detect_capabilities()
         assert "docker" in capabilities
 
     def test_detect_capabilities_no_docker(self, agent: WorkerAgent) -> None:
         """_detect_capabilities() should not include 'docker' when /.dockerenv does not exist."""
-        with patch("worker.src.agent.Path.exists", return_value=False):
+        with patch("worker.agent.Path.exists", return_value=False):
             capabilities = agent._detect_capabilities()
         # native is always there; docker/devcontainer may not be
         assert "native" in capabilities
@@ -194,7 +194,7 @@ class TestWorkerAgentShutdown:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("worker.src.agent.httpx.AsyncClient", return_value=mock_client):
+        with patch("worker.agent.httpx.AsyncClient", return_value=mock_client):
             await agent.shutdown()
 
         assert agent._running is False
@@ -209,7 +209,7 @@ class TestWorkerAgentShutdown:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("worker.src.agent.httpx.AsyncClient", return_value=mock_client):
+        with patch("worker.agent.httpx.AsyncClient", return_value=mock_client):
             await agent.shutdown()
 
         mock_client.delete.assert_called_once()
@@ -225,7 +225,7 @@ class TestWorkerAgentShutdown:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("worker.src.agent.httpx.AsyncClient", return_value=mock_client):
+        with patch("worker.agent.httpx.AsyncClient", return_value=mock_client):
             await agent.shutdown()
 
         assert agent._running is False

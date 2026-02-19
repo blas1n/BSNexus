@@ -4,10 +4,10 @@ import time
 
 import redis.asyncio as redis_lib
 
-from worker.src.agent import WorkerAgent
-from worker.src.executors.base import BaseExecutor
-from worker.src.git_ops import WorkerGitOps
-from worker.src.log import log
+from worker.agent import WorkerAgent
+from worker.executors.base import BaseExecutor
+from worker.git_ops import WorkerGitOps
+from worker.log import log
 
 
 class TaskConsumer:
@@ -104,7 +104,12 @@ class TaskConsumer:
         return value.decode() if isinstance(value, bytes) else value
 
     async def _process_task(self, msg_id: str, data: dict) -> None:
-        """Execute a task and publish result."""
+        """Execute a task and publish result. Dispatches revert messages separately."""
+        msg_type = self._decode(data.get("type", ""))
+        if msg_type == "revert":
+            await self._process_revert(msg_id, data)
+            return
+
         task_id = self._decode(data.get("task_id", ""))
 
         repo_path = self._decode(data.get("repo_path", ""))
@@ -199,6 +204,31 @@ class TaskConsumer:
                     "branch_name": branch_name,
                 },
             )
+        finally:
+            await self.redis.xack(  # type: ignore[misc]
+                self.agent.streams["tasks_queue"],
+                self.agent.consumer_groups["workers"],
+                msg_id,
+            )
+
+    async def _process_revert(self, msg_id: str, data: dict) -> None:
+        """Revert a previously committed task."""
+        task_id = self._decode(data.get("task_id", ""))
+        repo_path = self._decode(data.get("repo_path", ""))
+        commit_hash = self._decode(data.get("commit_hash", ""))
+        branch_name = self._decode(data.get("branch_name", ""))
+
+        log.info(">>> REVERT RECEIVED task_id=%s commit=%s", task_id, commit_hash or "(none)")
+
+        try:
+            if repo_path and commit_hash and branch_name:
+                git_ops = WorkerGitOps(repo_path)
+                await git_ops.revert_task(commit_hash, branch_name)
+                log.info("<<< REVERT DONE    task_id=%s", task_id)
+            else:
+                log.warning("<<< REVERT SKIPPED task_id=%s (missing repo_path/commit_hash/branch_name)", task_id)
+        except Exception as e:
+            log.error("<<< REVERT FAILED  task_id=%s error=%s", task_id, e)
         finally:
             await self.redis.xack(  # type: ignore[misc]
                 self.agent.streams["tasks_queue"],

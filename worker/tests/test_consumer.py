@@ -3,10 +3,10 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from worker.src.agent import WorkerAgent
-from worker.src.config import WorkerConfig
-from worker.src.consumer import TaskConsumer
-from worker.src.executors.base import BaseExecutor, ExecutionResult, ReviewResult
+from worker.agent import WorkerAgent
+from worker.config import WorkerConfig
+from worker.consumer import TaskConsumer
+from worker.executors.base import BaseExecutor, ExecutionResult, ReviewResult
 
 
 @pytest.fixture
@@ -68,7 +68,7 @@ class TestProcessTask:
         )
 
         data = {"task_id": "task-1", "worker_prompt": json.dumps({"prompt": "Write code"})}
-        with patch("worker.src.consumer.WorkerGitOps"):
+        with patch("worker.consumer.WorkerGitOps"):
             await consumer._process_task("msg-id-1", data)
 
         mock_executor.execute.assert_called_once_with("Write code", {"task_id": "task-1"})
@@ -114,7 +114,7 @@ class TestProcessTask:
         mock_executor.execute.return_value = ExecutionResult(success=True)
 
         data = {"task_id": "task-4", "worker_prompt": "prompt"}
-        with patch("worker.src.consumer.WorkerGitOps"):
+        with patch("worker.consumer.WorkerGitOps"):
             await consumer._process_task("msg-id-4", data)
 
         mock_redis.xack.assert_called_once_with("tasks:queue", "workers", "msg-id-4")
@@ -126,7 +126,7 @@ class TestProcessTask:
         mock_executor.execute.return_value = ExecutionResult(success=True)
 
         data = {"task_id": b"task-bytes", "worker_prompt": b'{"prompt": "do stuff"}'}
-        with patch("worker.src.consumer.WorkerGitOps"):
+        with patch("worker.consumer.WorkerGitOps"):
             await consumer._process_task("msg-id-5", data)
 
         mock_executor.execute.assert_called_once_with("do stuff", {"task_id": "task-bytes"})
@@ -138,7 +138,7 @@ class TestProcessTask:
         mock_executor.execute.return_value = ExecutionResult(success=True)
 
         data = {"task_id": "task-6", "worker_prompt": "plain text prompt"}
-        with patch("worker.src.consumer.WorkerGitOps"):
+        with patch("worker.consumer.WorkerGitOps"):
             await consumer._process_task("msg-id-6", data)
 
         mock_executor.execute.assert_called_once_with("plain text prompt", {"task_id": "task-6"})
@@ -157,7 +157,7 @@ class TestProcessTask:
             "title": "Add login",
         }
 
-        with patch("worker.src.consumer.WorkerGitOps") as MockGitOps:
+        with patch("worker.consumer.WorkerGitOps") as MockGitOps:
             mock_git = AsyncMock()
             mock_git.commit_task = AsyncMock(return_value="abc123hash")
             MockGitOps.return_value = mock_git
@@ -192,7 +192,7 @@ class TestProcessTask:
             "title": "Test",
         }
 
-        with patch("worker.src.consumer.WorkerGitOps") as MockGitOps:
+        with patch("worker.consumer.WorkerGitOps") as MockGitOps:
             mock_git = AsyncMock()
             mock_git.commit_task = AsyncMock(side_effect=RuntimeError("git failed"))
             MockGitOps.return_value = mock_git
@@ -218,7 +218,7 @@ class TestProcessTask:
             "title": "Test",
         }
 
-        with patch("worker.src.consumer.WorkerGitOps") as MockGitOps:
+        with patch("worker.consumer.WorkerGitOps") as MockGitOps:
             mock_git = AsyncMock()
             MockGitOps.return_value = mock_git
 
@@ -240,7 +240,7 @@ class TestProcessRevert:
             "branch_name": "phase/auth",
         }
 
-        with patch("worker.src.consumer.WorkerGitOps") as MockGitOps:
+        with patch("worker.consumer.WorkerGitOps") as MockGitOps:
             mock_git = AsyncMock()
             MockGitOps.return_value = mock_git
 
@@ -262,7 +262,7 @@ class TestProcessRevert:
             "branch_name": "phase/auth",
         }
 
-        with patch("worker.src.consumer.WorkerGitOps") as MockGitOps:
+        with patch("worker.consumer.WorkerGitOps") as MockGitOps:
             mock_git = AsyncMock()
             mock_git.revert_task = AsyncMock(side_effect=RuntimeError("revert failed"))
             MockGitOps.return_value = mock_git
@@ -284,7 +284,7 @@ class TestProcessRevert:
             "branch_name": "",
         }
 
-        with patch("worker.src.consumer.WorkerGitOps") as MockGitOps:
+        with patch("worker.consumer.WorkerGitOps") as MockGitOps:
             await consumer._process_task("msg-rev-skip", data)
 
         MockGitOps.assert_not_called()

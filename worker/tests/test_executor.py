@@ -3,8 +3,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from worker.src.executor import create_executor
-from worker.src.executors.claude_code import ClaudeCodeExecutor
+from worker.executor import create_executor
+from worker.executors.claude_code import ClaudeCodeExecutor
 
 
 class TestExecutorFactory:
@@ -34,7 +34,7 @@ class TestClaudeCodeExecutorExecute:
         mock_process.returncode = 0
         mock_process.communicate = AsyncMock(return_value=(b"Hello output", b""))
 
-        with patch("worker.src.executors.claude_code.asyncio.create_subprocess_exec", return_value=mock_process):
+        with patch("worker.executors.claude_code.asyncio.create_subprocess_exec", return_value=mock_process):
             result = await executor.execute("Write code", {"task_id": "t1"})
 
         assert result.success is True
@@ -50,7 +50,7 @@ class TestClaudeCodeExecutorExecute:
         mock_process.returncode = 1
         mock_process.communicate = AsyncMock(return_value=(b"", b"Error occurred"))
 
-        with patch("worker.src.executors.claude_code.asyncio.create_subprocess_exec", return_value=mock_process):
+        with patch("worker.executors.claude_code.asyncio.create_subprocess_exec", return_value=mock_process):
             result = await executor.execute("Write code", {"task_id": "t2"})
 
         assert result.success is False
@@ -63,7 +63,7 @@ class TestClaudeCodeExecutorExecute:
         mock_process = AsyncMock()
         mock_process.communicate = AsyncMock(side_effect=asyncio.TimeoutError)
 
-        with patch("worker.src.executors.claude_code.asyncio.create_subprocess_exec", return_value=mock_process):
+        with patch("worker.executors.claude_code.asyncio.create_subprocess_exec", return_value=mock_process):
             result = await executor.execute("Write code", {"task_id": "t3"})
 
         assert result.success is False
@@ -78,7 +78,7 @@ class TestClaudeCodeExecutorExecute:
         mock_process.communicate = AsyncMock(return_value=(b"ok", b""))
 
         with patch(
-            "worker.src.executors.claude_code.asyncio.create_subprocess_exec", return_value=mock_process
+            "worker.executors.claude_code.asyncio.create_subprocess_exec", return_value=mock_process
         ) as mock_exec:
             await executor.execute("Do something", {"task_id": "t4"})
 
@@ -100,7 +100,7 @@ class TestClaudeCodeExecutorExecute:
         mock_process.communicate = AsyncMock(return_value=(b"ok", b""))
 
         with patch(
-            "worker.src.executors.claude_code.asyncio.create_subprocess_exec", return_value=mock_process
+            "worker.executors.claude_code.asyncio.create_subprocess_exec", return_value=mock_process
         ) as mock_exec:
             await executor.execute("Do something", {"task_id": "t5", "workspace_dir": "/override/path"})
 
@@ -115,7 +115,7 @@ class TestClaudeCodeExecutorExecute:
         mock_process.communicate = AsyncMock(return_value=(b"ok", b""))
 
         with patch(
-            "worker.src.executors.claude_code.asyncio.create_subprocess_exec", return_value=mock_process
+            "worker.executors.claude_code.asyncio.create_subprocess_exec", return_value=mock_process
         ) as mock_exec:
             await executor.execute("Do something", {"task_id": "t6"})
 
@@ -131,7 +131,7 @@ class TestClaudeCodeExecutorReview:
         mock_process.returncode = 0
         mock_process.communicate = AsyncMock(return_value=(b"PASS - Code looks clean and well-structured.", b""))
 
-        with patch("worker.src.executors.claude_code.asyncio.create_subprocess_exec", return_value=mock_process):
+        with patch("worker.executors.claude_code.asyncio.create_subprocess_exec", return_value=mock_process):
             result = await executor.review("Review this", {"task_id": "r1"})
 
         assert result.passed is True
@@ -145,7 +145,7 @@ class TestClaudeCodeExecutorReview:
         mock_process.returncode = 0
         mock_process.communicate = AsyncMock(return_value=(b"FAIL - Missing error handling.", b""))
 
-        with patch("worker.src.executors.claude_code.asyncio.create_subprocess_exec", return_value=mock_process):
+        with patch("worker.executors.claude_code.asyncio.create_subprocess_exec", return_value=mock_process):
             result = await executor.review("Review this", {"task_id": "r2"})
 
         assert result.passed is False
@@ -159,7 +159,7 @@ class TestClaudeCodeExecutorReview:
         mock_process.returncode = 1
         mock_process.communicate = AsyncMock(return_value=(b"", b"CLI error"))
 
-        with patch("worker.src.executors.claude_code.asyncio.create_subprocess_exec", return_value=mock_process):
+        with patch("worker.executors.claude_code.asyncio.create_subprocess_exec", return_value=mock_process):
             result = await executor.review("Review this", {"task_id": "r3"})
 
         assert result.passed is False

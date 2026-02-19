@@ -2,7 +2,7 @@ import asyncio
 import tempfile
 from pathlib import Path
 
-from worker.src.log import log
+from worker.log import log
 
 from .base import BaseExecutor, ExecutionResult, ReviewResult
 

@@ -17,11 +17,20 @@ dev = [
 ]
 
 [project.scripts]
-bsnexus-worker = "worker.src.main:cli_main"
+bsnexus-worker = "worker.main:cli_main"
+
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["worker", "worker.executors"]
+
+[tool.setuptools.package-dir]
+worker = "src"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-pythonpath = ["/workspace"]
 
 [tool.ruff]
 line-length = 120

@@ -5,11 +5,11 @@ from pathlib import Path
 
 import redis.asyncio as redis_lib
 
-from worker.src.agent import WorkerAgent
-from worker.src.config import WorkerConfig
-from worker.src.consumer import TaskConsumer
-from worker.src.executor import create_executor
-from worker.src.log import log
+from worker.agent import WorkerAgent
+from worker.config import WorkerConfig
+from worker.consumer import TaskConsumer
+from worker.executor import create_executor
+from worker.log import log
 
 CONFIG_FILE = Path(__file__).resolve().parent.parent / ".env"
 
@@ -18,7 +18,7 @@ def _save_credentials(config: WorkerConfig, agent: WorkerAgent) -> None:
     """Append worker credentials to the worker .env file (like gitlab-runner config.toml)."""
     lines: list[str] = []
     if CONFIG_FILE.exists():
-        text = CONFIG_FILE.read_text()
+        text = CONFIG_FILE.read_text(encoding="utf-8")
         # Remove old credential lines
         lines = [
             line for line in text.splitlines()
@@ -38,7 +38,7 @@ def _save_credentials(config: WorkerConfig, agent: WorkerAgent) -> None:
         f"BSNEXUS_WORKER_TOKEN={agent.token}",
     ])
 
-    CONFIG_FILE.write_text("\n".join(lines) + "\n")
+    CONFIG_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 async def _run_loop(agent: WorkerAgent, config: WorkerConfig) -> None:
@@ -51,10 +51,13 @@ async def _run_loop(agent: WorkerAgent, config: WorkerConfig) -> None:
              agent.worker_id, config.executor_type, config.heartbeat_interval)
     log.info("Server: %s  Redis: %s", config.server_url, config.redis_url)
 
-    # Graceful shutdown
+    # Graceful shutdown (add_signal_handler is not supported on Windows)
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, lambda: asyncio.create_task(agent.shutdown()))
+        try:
+            loop.add_signal_handler(sig, lambda: asyncio.create_task(agent.shutdown()))
+        except NotImplementedError:
+            break
 
     tasks = [
         asyncio.create_task(agent.heartbeat_loop()),

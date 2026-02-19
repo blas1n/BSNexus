@@ -23,7 +23,7 @@ AI-powered development management system. An LLM Architect designs your project,
                     │  (port 8000) │  SQLAlchemy 2.0
                     └──┬───────┬───┘
                        │       │
-              ┌────────┴──┐ ┌──┴────────┐
+              ┌────────┴───┐ ┌──┴────────┐
               │ PostgreSQL │ │   Redis   │
               │  (storage) │ │ (streams) │
               └────────────┘ └─────┬─────┘
@@ -81,22 +81,22 @@ AI-powered development management system. An LLM Architect designs your project,
    ```bash
    cd worker
    uv pip install -e ".[dev]"
-   python -m worker.src.main
+   python -m worker.main
    ```
 
 6. **Open the app** at http://localhost:3000
 
 ## Tech Stack
 
-| Layer | Technology |
-|-------|-----------|
-| Frontend | React 19, TypeScript, Vite, Tailwind CSS, Zustand, TanStack Query |
-| Backend | Python 3.11+, FastAPI, SQLAlchemy 2.0 (async), Alembic |
-| Queue | Redis Streams (consumer groups) |
-| Database | PostgreSQL 16 |
-| LLM | LiteLLM (provider-agnostic) |
-| Worker | Claude Code (extensible executor system) |
-| Package Mgmt | uv (Python), pnpm (Node.js) |
+| Layer        | Technology                                                        |
+| ------------ | ----------------------------------------------------------------- |
+| Frontend     | React 19, TypeScript, Vite, Tailwind CSS, Zustand, TanStack Query |
+| Backend      | Python 3.11+, FastAPI, SQLAlchemy 2.0 (async), Alembic            |
+| Queue        | Redis Streams (consumer groups)                                   |
+| Database     | PostgreSQL 16                                                     |
+| LLM          | LiteLLM (provider-agnostic)                                       |
+| Worker       | Claude Code (extensible executor system)                          |
+| Package Mgmt | uv (Python), pnpm (Node.js)                                       |
 
 ## API Documentation
 
