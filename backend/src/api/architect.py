@@ -58,6 +58,26 @@ def _clean_response(text: str) -> tuple[str, bool, str | None]:
     return cleaned, has_finalize, design_context
 
 
+_STREAM_MARKERS = ["<design_context>", "[FINALIZE]"]
+_MAX_MARKER_LEN = max(len(m) for m in _STREAM_MARKERS)
+
+
+def _find_potential_marker_start(text: str) -> int | None:
+    """Find the earliest position where a suffix of *text* could be the start of a marker.
+
+    Returns the index into *text*, or ``None`` if no suffix matches any marker
+    prefix.  This is used during streaming to decide how much of the accumulated
+    buffer is safe to emit.
+    """
+    start = max(len(text) - _MAX_MARKER_LEN, 0)
+    for i in range(start, len(text)):
+        suffix = text[i:]
+        for marker in _STREAM_MARKERS:
+            if marker.startswith(suffix):
+                return i
+    return None
+
+
 def _extract_design_context(session: models.DesignSession) -> str | None:
     """Extract design_context from the last assistant chat message."""
     chat_messages = [
@@ -164,11 +184,11 @@ async def batch_delete_sessions(
     """Delete multiple design sessions by IDs."""
     from sqlalchemy import delete as sa_delete
 
-    result = await db.execute(
+    cursor = await db.execute(
         sa_delete(models.DesignSession).where(models.DesignSession.id.in_(body.ids))
     )
     await db.commit()
-    return schemas.BatchDeleteResponse(deleted=result.rowcount)
+    return schemas.BatchDeleteResponse(deleted=cursor.rowcount or 0)
 
 
 # ── 1. Create Session ────────────────────────────────────────────────
@@ -310,13 +330,61 @@ async def send_message_stream(
 
     async def event_generator():
         full_response = ""
+        emit_buffer = ""
+        suppressed = False
+
         try:
             async for chunk in client.stream_chat(messages):
                 full_response += chunk
-                yield {"event": "chunk", "data": chunk}
+
+                if suppressed:
+                    # Already found marker start — just accumulate for DB
+                    continue
+
+                emit_buffer += chunk
+
+                # Check for full <design_context> tag
+                dc_idx = emit_buffer.find("<design_context>")
+                if dc_idx != -1:
+                    safe_text = emit_buffer[:dc_idx].rstrip()
+                    if safe_text:
+                        yield {"event": "chunk", "data": safe_text}
+                    emit_buffer = ""
+                    suppressed = True
+                    continue
+
+                # Check for [FINALIZE] on its own
+                fin_idx = emit_buffer.find(FINALIZE_MARKER)
+                if fin_idx != -1:
+                    safe_text = emit_buffer[:fin_idx].rstrip()
+                    if safe_text:
+                        yield {"event": "chunk", "data": safe_text}
+                    emit_buffer = ""
+                    suppressed = True
+                    continue
+
+                # Check if the tail could be the start of a marker
+                marker_start = _find_potential_marker_start(emit_buffer)
+                if marker_start is not None:
+                    safe_text = emit_buffer[:marker_start]
+                    if safe_text:
+                        yield {"event": "chunk", "data": safe_text}
+                    emit_buffer = emit_buffer[marker_start:]
+                else:
+                    if emit_buffer:
+                        yield {"event": "chunk", "data": emit_buffer}
+                    emit_buffer = ""
+
         except LLMError as e:
             yield {"event": "error", "data": str(e)}
             return
+
+        # Flush remaining buffer that turned out not to be a marker
+        if emit_buffer and not suppressed:
+            cleaned_buf = emit_buffer.replace(FINALIZE_MARKER, "")
+            cleaned_buf = _CONTEXT_RE.sub("", cleaned_buf).strip()
+            if cleaned_buf:
+                yield {"event": "chunk", "data": cleaned_buf}
 
         # Detect and strip finalize marker / design_context
         cleaned_response, has_finalize, design_context = _clean_response(full_response)

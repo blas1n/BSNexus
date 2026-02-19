@@ -2040,3 +2040,125 @@ class TestAddTaskDirect:
             await add_task(project_id=project.id, body=body, db=db_session)
         assert exc_info.value.status_code == 400
         assert "No LLM configuration" in exc_info.value.detail
+
+
+# ── _find_potential_marker_start unit tests ──────────────────────────
+
+
+class TestFindPotentialMarkerStart:
+    """Direct unit tests for _find_potential_marker_start helper."""
+
+    def test_no_marker_in_normal_text(self):
+        from backend.src.api.architect import _find_potential_marker_start
+
+        assert _find_potential_marker_start("Hello world") is None
+
+    def test_partial_design_context_tag(self):
+        from backend.src.api.architect import _find_potential_marker_start
+
+        result = _find_potential_marker_start("some text<des")
+        assert result is not None
+        assert "some text<des"[result:] == "<des"
+
+    def test_partial_finalize_marker(self):
+        from backend.src.api.architect import _find_potential_marker_start
+
+        result = _find_potential_marker_start("some text[FIN")
+        assert result is not None
+        assert "some text[FIN"[result:] == "[FIN"
+
+    def test_full_design_context_tag_detected(self):
+        from backend.src.api.architect import _find_potential_marker_start
+
+        result = _find_potential_marker_start("text<design_context>")
+        assert result is not None
+        assert "text<design_context>"[result:] == "<design_context>"
+
+    def test_full_finalize_marker_detected(self):
+        from backend.src.api.architect import _find_potential_marker_start
+
+        result = _find_potential_marker_start("text[FINALIZE]")
+        assert result is not None
+        assert "text[FINALIZE]"[result:] == "[FINALIZE]"
+
+    def test_single_angle_bracket(self):
+        from backend.src.api.architect import _find_potential_marker_start
+
+        result = _find_potential_marker_start("some text<")
+        assert result is not None
+        assert "some text<"[result:] == "<"
+
+    def test_single_open_bracket(self):
+        from backend.src.api.architect import _find_potential_marker_start
+
+        result = _find_potential_marker_start("some text[")
+        assert result is not None
+        assert "some text["[result:] == "["
+
+    def test_empty_string(self):
+        from backend.src.api.architect import _find_potential_marker_start
+
+        assert _find_potential_marker_start("") is None
+
+    def test_non_marker_angle_bracket_completed(self):
+        """A completed non-marker tag like <div> should not trigger detection."""
+        from backend.src.api.architect import _find_potential_marker_start
+
+        assert _find_potential_marker_start("text<div>") is None
+
+    def test_non_marker_bracket_completed(self):
+        from backend.src.api.architect import _find_potential_marker_start
+
+        assert _find_potential_marker_start("[FOO]") is None
+
+    def test_design_context_one_char_at_a_time(self):
+        """Progressively build '<design_context>' and verify detection at each step."""
+        from backend.src.api.architect import _find_potential_marker_start
+
+        marker = "<design_context>"
+        for i in range(1, len(marker) + 1):
+            text = "prefix" + marker[:i]
+            result = _find_potential_marker_start(text)
+            assert result is not None, f"Failed to detect prefix of length {i}: {marker[:i]}"
+            assert text[result:] == marker[:i]
+
+
+# ── _clean_response unit tests ───────────────────────────────────────
+
+
+class TestCleanResponse:
+    """Direct unit tests for _clean_response helper."""
+
+    def test_no_markers(self):
+        from backend.src.api.architect import _clean_response
+
+        cleaned, has_finalize, design_ctx = _clean_response("Hello, how can I help?")
+        assert cleaned == "Hello, how can I help?"
+        assert has_finalize is False
+        assert design_ctx is None
+
+    def test_finalize_only(self):
+        from backend.src.api.architect import _clean_response
+
+        cleaned, has_finalize, design_ctx = _clean_response("Done!\n[FINALIZE]")
+        assert cleaned == "Done!"
+        assert has_finalize is True
+        assert design_ctx is None
+
+    def test_design_context_and_finalize(self):
+        from backend.src.api.architect import _clean_response
+
+        text = "Here is the design.\n<design_context>\nProject: Test\nStack: Python\n</design_context>\n[FINALIZE]"
+        cleaned, has_finalize, design_ctx = _clean_response(text)
+        assert cleaned == "Here is the design."
+        assert has_finalize is True
+        assert design_ctx == "Project: Test\nStack: Python"
+
+    def test_design_context_without_finalize(self):
+        from backend.src.api.architect import _clean_response
+
+        text = "Summary\n<design_context>\nSpec here\n</design_context>"
+        cleaned, has_finalize, design_ctx = _clean_response(text)
+        assert cleaned == "Summary"
+        assert has_finalize is False
+        assert design_ctx == "Spec here"
