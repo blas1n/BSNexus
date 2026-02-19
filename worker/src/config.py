@@ -8,7 +8,7 @@ class WorkerConfig(BaseSettings):
     executor_type: str = "claude-code"
     heartbeat_interval: int = 30
     poll_interval: int = 2  # seconds between empty poll retries
-    poll_timeout: int = 10  # HTTP timeout for poll (server blocks ~5s)
+    poll_timeout: int = 30  # HTTP timeout for poll (server blocks ~5s)
     duration: int | None = None  # None=infinite, seconds
     registration_token: str | None = None
 
