@@ -202,6 +202,35 @@ class WorkerHeartbeatResponse(BaseModel):
     pending_tasks: int
 
 
+class WorkerPollRequest(BaseModel):
+    poll_types: list[str] = Field(default=["task", "qa"])
+
+
+class WorkerPollItem(BaseModel):
+    type: str
+    message_id: str
+    stream: str
+    data: dict
+
+
+class WorkerPollResponse(BaseModel):
+    items: list[WorkerPollItem] = Field(default_factory=list)
+
+
+class WorkerResultRequest(BaseModel):
+    message_id: str
+    stream: str
+    result_type: str
+    task_id: str
+    success: bool = False
+    passed: bool = False
+    output_path: str = ""
+    error_message: str = ""
+    commit_hash: str = ""
+    branch_name: str = ""
+    feedback: str = ""
+
+
 # ── Board Schemas ─────────────────────────────────────────────────────
 
 

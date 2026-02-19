@@ -14,8 +14,6 @@ class WorkerAgent:
         self.config = config
         self.worker_id: str | None = None
         self.token: str | None = None
-        self.streams: dict[str, str] = {}
-        self.consumer_groups: dict[str, str] = {}
         self._running = True
 
     async def register(self) -> None:
@@ -50,10 +48,43 @@ class WorkerAgent:
             data = response.json()
             self.worker_id = data["worker_id"]
             self.token = data["token"]
-            self.streams = data["streams"]
-            self.consumer_groups = data["consumer_groups"]
+            if "poll_interval" in data:
+                self.config.poll_interval = data["poll_interval"]
 
-        log.info("Registered worker_id=%s streams=%s", self.worker_id, list(self.streams.keys()))
+        log.info("Registered worker_id=%s", self.worker_id)
+
+    async def poll(self) -> list[dict]:
+        """Poll the backend for available work items."""
+        async with httpx.AsyncClient(timeout=self.config.poll_timeout) as client:
+            response = await client.post(
+                f"{self.config.server_url}/api/v1/workers/{self.worker_id}/poll",
+                headers={"Authorization": f"Bearer {self.token}"},
+                json={"poll_types": ["task", "qa"]},
+            )
+            response.raise_for_status()
+            return response.json().get("items", [])
+
+    async def submit_result(self, result: dict) -> None:
+        """Submit a task/QA/revert result to the backend with retries."""
+        for attempt in range(3):
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    response = await client.post(
+                        f"{self.config.server_url}/api/v1/workers/{self.worker_id}/result",
+                        headers={"Authorization": f"Bearer {self.token}"},
+                        json=result,
+                    )
+                    response.raise_for_status()
+                    return
+            except Exception as e:
+                if attempt < 2:
+                    wait = 2 ** attempt
+                    log.warning("Result submission failed (attempt %d/3), retrying in %ds: %s",
+                                attempt + 1, wait, e)
+                    await asyncio.sleep(wait)
+                else:
+                    log.error("Result submission failed after 3 attempts: %s", e)
+                    raise
 
     async def heartbeat_loop(self) -> None:
         """Periodically send heartbeat to the server."""
@@ -91,7 +122,7 @@ class WorkerAgent:
                     consecutive_failures = 0
 
     async def _re_register(self) -> None:
-        """Re-register with the server, preserving stream/group info for consumers."""
+        """Re-register with the server."""
         try:
             await self.register()
             log.info("Re-registered as worker %s", self.worker_id)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timezone
 
@@ -8,7 +9,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.src import models
 from backend.src.queue.streams import RedisStreamManager
-from backend.src.schemas import WorkerRegister
+from backend.src.schemas import (
+    WorkerPollItem,
+    WorkerPollRequest,
+    WorkerPollResponse,
+    WorkerRegister,
+    WorkerResultRequest,
+)
 from backend.src.storage.database import get_db
 from backend.src.utils.worker_registry import WorkerRegistry
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -127,6 +134,7 @@ async def register_worker(
         "worker_id": reg_result["worker_id"],
         "token": reg_result["token"],
         "heartbeat_interval": 30,
+        "poll_interval": 2,
         "streams": {
             "tasks_queue": RedisStreamManager.TASKS_QUEUE,
             "tasks_results": RedisStreamManager.TASKS_RESULTS,
@@ -225,3 +233,154 @@ async def deregister_worker(
     registry = _get_registry(request)
     await registry.deregister(str(worker_id))
     return {"detail": "Worker deregistered", "worker_id": str(worker_id)}
+
+
+# -- Poll / Result endpoints --------------------------------------------------
+
+
+def _decode_stream_message(data: dict) -> dict:
+    """Decode a raw Redis stream message: bytes→str, attempt JSON deserialization."""
+    decoded: dict = {}
+    for k, v in data.items():
+        key = k.decode() if isinstance(k, bytes) else k
+        val = v.decode() if isinstance(v, bytes) else v
+        try:
+            decoded[key] = json.loads(val)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            decoded[key] = val
+    return decoded
+
+
+async def _xreadgroup_raw(
+    redis_client: object,
+    stream: str,
+    group: str,
+    consumer: str,
+    start_id: str,
+    count: int,
+    block: int | None = None,
+) -> list[tuple[str, dict]]:
+    """Low-level xreadgroup wrapper returning (message_id, decoded_data) pairs."""
+    kwargs: dict = {
+        "groupname": group,
+        "consumername": consumer,
+        "streams": {stream: start_id},
+        "count": count,
+    }
+    if block is not None:
+        kwargs["block"] = block
+
+    messages = await redis_client.xreadgroup(**kwargs)  # type: ignore[union-attr]
+    results: list[tuple[str, dict]] = []
+    if messages:
+        for _stream_name, entries in messages:
+            for msg_id, data in entries:
+                results.append((msg_id, _decode_stream_message(data)))
+    return results
+
+
+# Stream key → (Redis stream name, consumer group name)
+_STREAM_MAP: dict[str, tuple[str, str]] = {
+    "task": (RedisStreamManager.TASKS_QUEUE, RedisStreamManager.GROUP_WORKERS),
+    "qa": (RedisStreamManager.TASKS_QA, RedisStreamManager.GROUP_REVIEWERS),
+}
+
+
+@router.post("/{worker_id}/poll")
+async def poll_work(
+    worker_id: uuid.UUID,
+    body: WorkerPollRequest,
+    request: Request,
+    authenticated_worker_id: str = Depends(verify_worker_token),
+) -> WorkerPollResponse:
+    """Poll for available work items on behalf of a worker.
+
+    Checks pending (unacknowledged) messages first, then new messages.
+    Blocks up to 5 seconds waiting for new work if no pending items exist.
+    """
+    if str(worker_id) != authenticated_worker_id:
+        raise HTTPException(status_code=403, detail="Token does not match worker")
+
+    redis_client = request.app.state.redis
+    worker_id_str = str(worker_id)
+    items: list[WorkerPollItem] = []
+
+    # Resolve requested poll types to (stream, group, source_label)
+    stream_configs: list[tuple[str, str, str]] = []
+    for poll_type in body.poll_types:
+        if poll_type in _STREAM_MAP:
+            stream_name, group_name = _STREAM_MAP[poll_type]
+            stream_configs.append((stream_name, group_name, poll_type))
+
+    # Phase 1: Recover pending messages (xreadgroup with "0")
+    for stream, group, source in stream_configs:
+        pending = await _xreadgroup_raw(redis_client, stream, group, worker_id_str, "0", count=5)
+        for msg_id, data in pending:
+            items.append(WorkerPollItem(
+                type=data.get("type", source),
+                message_id=msg_id,
+                stream=source,
+                data=data,
+            ))
+
+    # Phase 2: If no pending, poll for new messages (blocking up to 5s)
+    if not items:
+        for stream, group, source in stream_configs:
+            new_msgs = await _xreadgroup_raw(
+                redis_client, stream, group, worker_id_str, ">", count=1, block=5000,
+            )
+            for msg_id, data in new_msgs:
+                items.append(WorkerPollItem(
+                    type=data.get("type", source),
+                    message_id=msg_id,
+                    stream=source,
+                    data=data,
+                ))
+            if items:
+                break  # Return as soon as we have work
+
+    return WorkerPollResponse(items=items)
+
+
+@router.post("/{worker_id}/result")
+async def submit_result(
+    worker_id: uuid.UUID,
+    body: WorkerResultRequest,
+    request: Request,
+    authenticated_worker_id: str = Depends(verify_worker_token),
+) -> dict:
+    """Submit a task/QA/revert result. Publishes to tasks:results and ACKs the original message."""
+    if str(worker_id) != authenticated_worker_id:
+        raise HTTPException(status_code=403, detail="Token does not match worker")
+
+    stream_manager: RedisStreamManager = request.app.state.stream_manager
+    worker_id_str = str(worker_id)
+
+    # Publish result to tasks:results (except for reverts which only need ACK)
+    if body.result_type == "execution":
+        await stream_manager.publish(RedisStreamManager.TASKS_RESULTS, {
+            "task_id": body.task_id,
+            "worker_id": worker_id_str,
+            "type": "execution",
+            "success": str(body.success).lower(),
+            "output_path": body.output_path,
+            "error_message": body.error_message,
+            "commit_hash": body.commit_hash,
+            "branch_name": body.branch_name,
+        })
+    elif body.result_type == "qa":
+        await stream_manager.publish(RedisStreamManager.TASKS_RESULTS, {
+            "task_id": body.task_id,
+            "worker_id": worker_id_str,
+            "type": "qa",
+            "passed": str(body.passed).lower(),
+            "feedback": body.feedback,
+            "error_message": body.error_message,
+        })
+
+    # ACK the original message on the source stream
+    if body.stream in _STREAM_MAP:
+        stream_name, group_name = _STREAM_MAP[body.stream]
+        await stream_manager.acknowledge(stream_name, group_name, body.message_id)
+
+    return {"acknowledged": True}
