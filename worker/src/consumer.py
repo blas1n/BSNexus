@@ -39,7 +39,7 @@ class TaskConsumer:
 
             except Exception as e:
                 if self.agent._running:
-                    log.error("Poll loop error: %s", e)
+                    log.error("Poll loop error: %s: %s", type(e).__name__, e)
                     await asyncio.sleep(5)
 
     @staticmethod

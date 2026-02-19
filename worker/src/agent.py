@@ -61,6 +61,8 @@ class WorkerAgent:
                 headers={"Authorization": f"Bearer {self.token}"},
                 json={"poll_types": ["task", "qa"]},
             )
+            if response.status_code != 200:
+                log.warning("Poll returned HTTP %d: %s", response.status_code, response.text[:200])
             response.raise_for_status()
             return response.json().get("items", [])
 

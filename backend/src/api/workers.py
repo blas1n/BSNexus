@@ -270,12 +270,17 @@ async def _xreadgroup_raw(
     if block is not None:
         kwargs["block"] = block
 
-    messages = await redis_client.xreadgroup(**kwargs)  # type: ignore[union-attr]
+    try:
+        messages = await redis_client.xreadgroup(**kwargs)  # type: ignore[union-attr]
+    except Exception:
+        # Stream or consumer group may not exist yet
+        return []
     results: list[tuple[str, dict]] = []
     if messages:
         for _stream_name, entries in messages:
             for msg_id, data in entries:
-                results.append((msg_id, _decode_stream_message(data)))
+                mid = msg_id.decode() if isinstance(msg_id, bytes) else str(msg_id)
+                results.append((mid, _decode_stream_message(data)))
     return results
 
 
