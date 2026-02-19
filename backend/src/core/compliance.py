@@ -93,7 +93,13 @@ class ComplianceCheck:
 
 
 class ComplianceManager:
-    """Manages regulatory compliance checks and reporting."""
+    """Manages regulatory compliance checks and reporting.
+
+    NOTE: Current checks are structural scaffolding — they verify that security
+    components exist (models, middleware, configs) but do not perform deep
+    runtime validation. Treat results as a self-assessment baseline, not a
+    substitute for a proper audit.
+    """
 
     def __init__(self, db: AsyncSession) -> None:
         self._db = db

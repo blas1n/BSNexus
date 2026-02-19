@@ -87,7 +87,12 @@ class SecurityReport:
 
 
 class SecurityAuditor:
-    """Performs security vulnerability scans against the application configuration."""
+    """Performs security vulnerability scans against the application configuration.
+
+    NOTE: This is a static configuration checker — it validates settings values
+    against known-good patterns. It does not perform dynamic penetration testing
+    or runtime vulnerability scanning.
+    """
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings

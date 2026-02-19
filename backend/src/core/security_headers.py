@@ -48,9 +48,10 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         # Permissions Policy (formerly Feature-Policy)
         response.headers["Permissions-Policy"] = self.permissions_policy
 
-        # Prevent caching of sensitive responses
-        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, proxy-revalidate"
-        response.headers["Pragma"] = "no-cache"
+        # Prevent caching of API responses (skip if Cache-Control is already set by the handler)
+        if "Cache-Control" not in response.headers:
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, proxy-revalidate"
+            response.headers["Pragma"] = "no-cache"
 
         # HSTS (only enable when serving over HTTPS in production)
         if self.enable_hsts:

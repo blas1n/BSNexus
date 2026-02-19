@@ -10,11 +10,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from backend.src.main import app
 from backend.src.storage.database import Base, get_db
 
-# Import all models so Base.metadata.create_all picks them up
+# Import models so Base.metadata.create_all picks them up.
+# Security models (audit_logger, access_control, compliance) are loaded
+# transitively via main.py -> security router imports.
 import backend.src.models  # noqa: F401
-import backend.src.core.audit_logger  # noqa: F401
-import backend.src.core.access_control  # noqa: F401
-import backend.src.core.compliance  # noqa: F401
 
 TEST_DATABASE_URL = "sqlite+aiosqlite://"
 

@@ -43,3 +43,10 @@ shared/generated/
 
 # pnpm
 .pnpm-store/
+
+# Test output artifacts
+test/
+
+# Ruff / pytest cache
+.ruff_cache/
+.pytest_cache/

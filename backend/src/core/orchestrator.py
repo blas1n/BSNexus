@@ -91,50 +91,62 @@ class PMOrchestrator:
                     # Sequential constraint: only one task at a time per project
                     active_count = await repo.count_active_tasks(project_id)
                     if active_count > 0:
-                        await asyncio.sleep(5)
-                        continue
+                        # Release DB connection before sleeping
+                        pass
+                    else:
+                        # Check phase completion and advance to next phase if needed
+                        phase_events = await self._check_and_advance_phase(project_id, db)
 
-                    # Check phase completion and advance to next phase if needed
-                    await self._check_and_advance_phase(project_id, db)
+                        # Promote waiting tasks in the active phase
+                        await self._promote_waiting_tasks_inner(project_id, db)
 
-                    # Promote waiting tasks in the active phase
-                    await self._promote_waiting_tasks_inner(project_id, db)
+                        ready_tasks = await repo.list_ready_by_priority(project_id)
+                        workers = await self.registry.get_all_workers()
+                        idle_workers = [w for w in workers if w["status"] == "idle"]
 
-                    ready_tasks = await repo.list_ready_by_priority(project_id)
-                    workers = await self.registry.get_all_workers()
-                    idle_workers = [w for w in workers if w["status"] == "idle"]
+                        if ready_tasks and idle_workers:
+                            task = ready_tasks[0]
+                            await self.state_machine.transition(
+                                task=task,
+                                new_status=TaskStatus.queued,
+                                reason="Scheduled by PM",
+                                actor="pm",
+                                db_session=db,
+                                stream_manager=self.stream_manager,
+                            )
 
-                    if ready_tasks and idle_workers:
-                        task = ready_tasks[0]
-                        await self.state_machine.transition(
-                            task=task,
-                            new_status=TaskStatus.queued,
-                            reason="Scheduled by PM",
-                            actor="pm",
-                            db_session=db,
-                            stream_manager=self.stream_manager,
-                        )
+                        await db.commit()
 
-                    await db.commit()
+                        # Publish phase events after successful commit
+                        for event_type, event_data in phase_events:
+                            await self.stream_manager.publish_board_event(event_type, event_data)
             except Exception:
                 logger.exception("Scheduling loop error")
 
             await asyncio.sleep(5)
 
-    async def _check_and_advance_phase(self, project_id: uuid.UUID, db: AsyncSession) -> None:
-        """Check if active phase is complete and advance to the next phase."""
+    async def _check_and_advance_phase(
+        self, project_id: uuid.UUID, db: AsyncSession
+    ) -> list[tuple[str, dict[str, str]]]:
+        """Check if active phase is complete and advance to the next phase.
+
+        Returns a list of (event_type, event_data) tuples to be published
+        after the DB transaction is committed.
+        """
+        events: list[tuple[str, dict[str, str]]] = []
+
         phase_repo = PhaseRepository(db)
         active_phase = await phase_repo.get_active_phase(project_id)
         if active_phase is None:
-            return
+            return events
 
         incomplete = await phase_repo.count_incomplete_tasks(active_phase.id)
         if incomplete > 0:
-            return
+            return events
 
         # Phase completed
         active_phase.status = PhaseStatus.completed
-        await self.stream_manager.publish_board_event(
+        events.append((
             "phase_completed",
             {
                 "phase_id": str(active_phase.id),
@@ -142,13 +154,13 @@ class PMOrchestrator:
                 "phase_name": active_phase.name,
                 "phase_order": str(active_phase.order),
             },
-        )
+        ))
 
         # Activate next phase
         next_phase = await phase_repo.get_next_pending_phase(project_id, active_phase.order)
         if next_phase is not None:
             next_phase.status = PhaseStatus.active
-            await self.stream_manager.publish_board_event(
+            events.append((
                 "phase_activated",
                 {
                     "phase_id": str(next_phase.id),
@@ -156,7 +168,9 @@ class PMOrchestrator:
                     "phase_name": next_phase.name,
                     "phase_order": str(next_phase.order),
                 },
-            )
+            ))
+
+        return events
 
     async def _results_loop(self, project_id: uuid.UUID, db_session_factory: Any) -> None:
         """Consume task results and process them."""

@@ -1,7 +1,6 @@
 """Tests for EncryptionManager."""
 
 import pytest
-import warnings
 
 from backend.src.core.encryption import EncryptionManager
 
@@ -124,9 +123,9 @@ class TestGenerateKey:
 
 
 class TestDefaultKeyWarning:
-    def test_warns_on_default_key(self):
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
+    def test_warns_on_default_key(self, caplog):
+        import logging
+
+        with caplog.at_level(logging.WARNING):
             EncryptionManager("dev-encryption-key-change-in-production")
-            assert len(w) == 1
-            assert "default encryption key" in str(w[0].message)
+        assert any("default encryption key" in r.message for r in caplog.records)

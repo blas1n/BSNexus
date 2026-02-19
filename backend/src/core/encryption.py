@@ -10,21 +10,22 @@ import secrets
 class EncryptionManager:
     """Manages encryption for sensitive data at rest.
 
-    Uses AES-256-GCM via the Fernet-compatible scheme built on stdlib.
-    For production, ensure ENCRYPTION_KEY is set via environment variable
-    and rotated periodically.
+    Uses HMAC-SHA256 in counter mode as a stream cipher with HMAC authentication
+    for field-level encryption of sensitive data (API keys, tokens, etc.).
 
-    This implementation uses HMAC-SHA256 for field-level encryption of
-    sensitive data stored in the database (API keys, tokens, etc.).
+    WARNING: This is a stdlib-only implementation suitable for low-sensitivity data.
+    For production with high-sensitivity data, replace with `cryptography.fernet.Fernet`
+    or AES-256-GCM via the `cryptography` package.
+
+    Ensure ENCRYPTION_KEY is set via environment variable and rotated periodically.
     """
 
     def __init__(self, key: str) -> None:
         if not key or key == "dev-encryption-key-change-in-production":
-            import warnings
-            warnings.warn(
-                "Using default encryption key. Set ENCRYPTION_KEY environment variable for production.",
-                UserWarning,
-                stacklevel=2,
+            import logging
+            logging.getLogger(__name__).warning(
+                "SECURITY: Using default encryption key. "
+                "Set ENCRYPTION_KEY environment variable for production."
             )
         # Derive a 32-byte key from the provided key string
         self._key = hashlib.sha256(key.encode()).digest()

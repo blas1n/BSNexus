@@ -62,8 +62,14 @@ DEFAULT_RATE_LIMITS: dict[str, RateLimitConfig] = {
 class RateLimiter:
     """In-memory token bucket rate limiter.
 
-    For production deployments, this should be replaced with a Redis-backed
-    implementation for distributed rate limiting across multiple app instances.
+    Limitations:
+    - Single-process only: with multiple uvicorn workers, each process has its
+      own bucket dict, effectively multiplying the rate limit by the worker count.
+    - Memory: stale buckets are cleaned every 5 minutes, but sustained traffic
+      from many distinct IPs will grow the dict proportionally.
+
+    TODO: Replace with Redis-backed implementation (e.g. sliding window counter
+    via EVALSHA) for production multi-worker deployments.
     """
 
     def __init__(self, rate_limits: dict[str, RateLimitConfig] | None = None) -> None:

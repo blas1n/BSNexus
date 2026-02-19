@@ -30,7 +30,7 @@ PATH_TRAVERSAL_PATTERNS: list[re.Pattern[str]] = [
 ]
 
 COMMAND_INJECTION_PATTERNS: list[re.Pattern[str]] = [
-    re.compile(r"[;&|`$]"),
+    re.compile(r"[;&|`]"),
     re.compile(r"\$\("),
     re.compile(r"\$\{"),
 ]

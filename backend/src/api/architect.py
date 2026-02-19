@@ -502,13 +502,16 @@ async def finalize_design(
             flat_index += 1
 
     # Phase-gated task status: only first phase is active, its dep-free tasks are ready
-    if phases_by_order:
-        phases_by_order[1].status = models.PhaseStatus.active
-        first_phase_indices = phase_task_indices.get(1, set())
-        for i, task in enumerate(all_tasks):
-            if i not in tasks_with_deps and i in first_phase_indices:
-                task.status = models.TaskStatus.ready
-            # All other tasks remain in default waiting status
+    if not phases_by_order:
+        raise HTTPException(status_code=400, detail="Design must contain at least one phase with tasks")
+
+    first_order = min(phases_by_order.keys())
+    phases_by_order[first_order].status = models.PhaseStatus.active
+    first_phase_indices = phase_task_indices.get(first_order, set())
+    for i, task in enumerate(all_tasks):
+        if i not in tasks_with_deps and i in first_phase_indices:
+            task.status = models.TaskStatus.ready
+        # All other tasks remain in default waiting status
 
     # Assign worker to project if session had a worker selected
     if session.worker_id:
