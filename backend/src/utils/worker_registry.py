@@ -133,12 +133,18 @@ class WorkerRegistry:
     async def set_busy(self, worker_id: str, task_id: str) -> None:
         """Set worker status to busy and record the current task."""
         key = self._worker_key(worker_id)
+        if not await self.redis.exists(key):  # type: ignore[misc]
+            return
         await self.redis.hset(key, mapping={"status": "busy", "current_task_id": task_id})  # type: ignore[misc]
+        await self.redis.expire(key, self.ttl)  # type: ignore[misc]
 
     async def set_idle(self, worker_id: str) -> None:
         """Set worker status to idle and clear the current task."""
         key = self._worker_key(worker_id)
+        if not await self.redis.exists(key):  # type: ignore[misc]
+            return
         await self.redis.hset(key, mapping={"status": "idle", "current_task_id": ""})  # type: ignore[misc]
+        await self.redis.expire(key, self.ttl)  # type: ignore[misc]
 
     async def deregister(self, worker_id: str) -> None:
         """Remove a worker and its token from Redis."""

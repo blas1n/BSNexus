@@ -204,23 +204,49 @@ async def test_get_all_workers_empty(registry: WorkerRegistry, mock_redis: Async
 
 
 async def test_set_busy_updates_status(registry: WorkerRegistry, mock_redis: AsyncMock) -> None:
-    """set_busy() should HSET status=busy and current_task_id."""
+    """set_busy() should HSET status=busy and current_task_id, then renew TTL."""
+    mock_redis.exists.return_value = 1
+
     await registry.set_busy("w-1", "task-42")
 
     mock_redis.hset.assert_called_once_with(
         "worker:w-1",
         mapping={"status": "busy", "current_task_id": "task-42"},
     )
+    mock_redis.expire.assert_called_once_with("worker:w-1", 60)
+
+
+async def test_set_busy_skips_expired_worker(registry: WorkerRegistry, mock_redis: AsyncMock) -> None:
+    """set_busy() should not create a zombie key if the worker has expired."""
+    mock_redis.exists.return_value = 0
+
+    await registry.set_busy("w-gone", "task-42")
+
+    mock_redis.hset.assert_not_called()
+    mock_redis.expire.assert_not_called()
 
 
 async def test_set_idle_updates_status(registry: WorkerRegistry, mock_redis: AsyncMock) -> None:
-    """set_idle() should HSET status=idle and clear current_task_id."""
+    """set_idle() should HSET status=idle and clear current_task_id, then renew TTL."""
+    mock_redis.exists.return_value = 1
+
     await registry.set_idle("w-1")
 
     mock_redis.hset.assert_called_once_with(
         "worker:w-1",
         mapping={"status": "idle", "current_task_id": ""},
     )
+    mock_redis.expire.assert_called_once_with("worker:w-1", 60)
+
+
+async def test_set_idle_skips_expired_worker(registry: WorkerRegistry, mock_redis: AsyncMock) -> None:
+    """set_idle() should not create a zombie key if the worker has expired."""
+    mock_redis.exists.return_value = 0
+
+    await registry.set_idle("w-gone")
+
+    mock_redis.hset.assert_not_called()
+    mock_redis.expire.assert_not_called()
 
 
 # ── deregister ───────────────────────────────────────────────────────────
