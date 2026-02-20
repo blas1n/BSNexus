@@ -1594,7 +1594,7 @@ class TestFinalizeDesignDirect:
         assert "base_url" not in result.llm_config["pm"]
 
     async def test_finalize_empty_phases(self, db_session):
-        """Finalize with empty phases list still succeeds."""
+        """Finalize with empty phases list raises 400."""
         from backend.src import schemas
         from backend.src.api.architect import finalize_design
 
@@ -1611,12 +1611,12 @@ class TestFinalizeDesignDirect:
             instance = MockClient.return_value
             instance.structured_output = AsyncMock(return_value=empty_response)
 
-            result = await finalize_design(
-                session_id=session.id, body=body, db=db_session
-            )
-
-        assert result.name == "Empty Project"
-        assert len(result.phases) == 0
+            with pytest.raises(HTTPException) as exc_info:
+                await finalize_design(
+                    session_id=session.id, body=body, db=db_session
+                )
+            assert exc_info.value.status_code == 400
+            assert "at least one phase" in exc_info.value.detail
 
     async def test_finalize_with_out_of_range_dependency_index(self, db_session):
         """Finalize ignores out-of-range depends_on_indices."""

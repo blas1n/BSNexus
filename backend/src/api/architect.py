@@ -14,7 +14,7 @@ from backend.src.repositories.design_session_repository import DesignSessionRepo
 from backend.src.repositories.phase_repository import PhaseRepository
 from backend.src.repositories.project_repository import ProjectRepository
 from backend.src.repositories.task_repository import TaskRepository
-from backend.src.storage.database import get_db
+from backend.src.storage.database import async_session, get_db
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -188,7 +188,8 @@ async def batch_delete_sessions(
         sa_delete(models.DesignSession).where(models.DesignSession.id.in_(body.ids))
     )
     await db.commit()
-    return schemas.BatchDeleteResponse(deleted=cursor.rowcount or 0)
+    deleted: int = cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0  # type: ignore[attr-defined]
+    return schemas.BatchDeleteResponse(deleted=deleted)
 
 
 # ── 1. Create Session ────────────────────────────────────────────────
@@ -413,7 +414,13 @@ async def finalize_design(
     body: schemas.FinalizeRequest,
     db: AsyncSession = Depends(get_db),
 ) -> schemas.ProjectResponse:
-    """Finalize a design session into a project with phases and tasks."""
+    """Finalize a design session into a project with phases and tasks.
+
+    Splits into two DB session scopes to avoid holding a connection idle
+    during the long-running LLM call (which can take 30-60+ seconds and
+    cause intermittent stale-connection errors).
+    """
+    # ── Phase 1: Read session & prepare LLM messages (short DB scope) ──
     session_repo = DesignSessionRepository(db)
     session = await session_repo.get_by_id(session_id)
     if session is None:
@@ -433,26 +440,27 @@ async def finalize_design(
     if session.status != models.DesignSessionStatus.active:
         raise HTTPException(status_code=400, detail="Session is not active")
 
-    # Extract design_context for optimized finalize (avoids sending full history)
+    # Extract everything we need from the session before releasing the DB
     design_context = _extract_design_context(session)
+    llm_config_dict = session.llm_config
+    session_worker_id = session.worker_id
 
     finalize_template = get_prompt("architect", "finalize")
     if design_context:
-        # Use only system prompt + design_context (no full conversation history)
         finalize_prompt = finalize_template.format(design_context=design_context)
         messages = [
             {"role": "system", "content": get_prompt("architect", "system")},
             {"role": "user", "content": finalize_prompt},
         ]
     else:
-        # Fallback: full conversation history (legacy sessions without design_context)
         finalize_prompt = finalize_template.format(
             design_context="(see conversation history above)"
         )
         messages = _build_message_history(session)
         messages.append({"role": "user", "content": finalize_prompt})
 
-    config = _build_llm_config(session.llm_config)
+    # ── Phase 2: LLM call (DB not used — reads are done) ────────────────
+    config = _build_llm_config(llm_config_dict)
     client = LLMClient(config)
 
     try:
@@ -463,142 +471,160 @@ async def finalize_design(
     except LLMError as e:
         raise HTTPException(status_code=502, detail=f"LLM error: {e}") from e
 
-    # Store finalize prompt and response as internal messages for auditability
-    await session_repo.add_message(
-        session.id,
-        models.MessageRole.user,
-        finalize_prompt,
-        message_type=models.MessageType.internal,
-    )
-    await session_repo.add_message(
-        session.id,
-        models.MessageRole.assistant,
-        json.dumps(result, ensure_ascii=False),
-        message_type=models.MessageType.internal,
-    )
+    # ── Phase 3: Write results with a fresh DB session ─────────────────
+    async with async_session() as write_db:
+        write_session_repo = DesignSessionRepository(write_db)
 
-    # Build llm_config for the project
-    project_llm_config: dict[str, Any] = {
-        "architect": session.llm_config,
-    }
-    if body.pm_llm_config:
-        project_llm_config["pm"] = {
-            "api_key": body.pm_llm_config.api_key,
-        }
-        if body.pm_llm_config.model:
-            project_llm_config["pm"]["model"] = body.pm_llm_config.model
-        if body.pm_llm_config.base_url:
-            project_llm_config["pm"]["base_url"] = body.pm_llm_config.base_url
-
-    # Create project
-    project = models.Project(
-        name=result.get("project_name", "Untitled Project"),
-        description=result.get("project_description", ""),
-        repo_path=body.repo_path,
-        status=models.ProjectStatus.design,
-        llm_config=project_llm_config,
-    )
-    db.add(project)
-    await db.flush()
-
-    # Create phases and tasks, collecting all tasks in a flat list for dependency resolution
-    all_tasks: list[models.Task] = []
-    phases_data = result.get("phases", [])
-    phases_by_order: dict[int, models.Phase] = {}
-
-    # Track which flat indices belong to each phase
-    phase_task_indices: dict[int, set[int]] = {}  # phase_order -> set of flat indices
-    flat_idx_counter = 0
-
-    for phase_order, phase_data in enumerate(phases_data, start=1):
-        phase_name = phase_data.get("name", f"Phase {phase_order}")
-        branch_name = f"phase/{_slugify(phase_name)}"
-
-        phase = models.Phase(
-            project_id=project.id,
-            name=phase_name,
-            description=phase_data.get("description"),
-            branch_name=branch_name,
-            order=phase_order,
-        )
-        db.add(phase)
-        await db.flush()
-        phases_by_order[phase_order] = phase
-
-        task_indices: set[int] = set()
-        for task_data in phase_data.get("tasks", []):
-            priority_str = task_data.get("priority", "medium")
-            try:
-                priority = models.TaskPriority(priority_str)
-            except ValueError:
-                priority = models.TaskPriority.medium
-
-            task = models.Task(
-                project_id=project.id,
-                phase_id=phase.id,
-                title=task_data.get("title", "Untitled Task"),
-                description=task_data.get("description"),
-                priority=priority,
-                worker_prompt={"prompt": task_data.get("worker_prompt", "")},
-                qa_prompt={"prompt": task_data.get("qa_prompt", "")},
-                branch_name=branch_name,
+        # Re-validate session status (guard against concurrent finalize)
+        session = await write_session_repo.get_by_id(session_id, load_messages=False)
+        if session is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+        if session.status == models.DesignSessionStatus.finalized:
+            if session.project_id:
+                project_repo = ProjectRepository(write_db)
+                existing_project = await project_repo.get_by_id(session.project_id)
+                if existing_project:
+                    return schemas.ProjectResponse.model_validate(existing_project)
+            raise HTTPException(
+                status_code=400, detail="Session is finalized but project not found"
             )
-            db.add(task)
-            await db.flush()
-            all_tasks.append(task)
-            task_indices.add(flat_idx_counter)
-            flat_idx_counter += 1
 
-        phase_task_indices[phase_order] = task_indices
-
-    # Wire up dependencies using depends_on_indices
-    task_repo = TaskRepository(db)
-    tasks_with_deps: set[int] = set()
-    flat_index = 0
-    for phase_data in phases_data:
-        for task_data in phase_data.get("tasks", []):
-            depends_on_indices = task_data.get("depends_on_indices", [])
-            if depends_on_indices:
-                dep_ids = []
-                for idx in depends_on_indices:
-                    if 0 <= idx < len(all_tasks):
-                        dep_ids.append(all_tasks[idx].id)
-                if dep_ids:
-                    await task_repo.add_dependencies(all_tasks[flat_index].id, dep_ids)
-                    all_tasks[flat_index].status = models.TaskStatus.waiting
-                    tasks_with_deps.add(flat_index)
-            flat_index += 1
-
-    # Phase-gated task status: only first phase is active, its dep-free tasks are ready
-    if not phases_by_order:
-        raise HTTPException(status_code=400, detail="Design must contain at least one phase with tasks")
-
-    first_order = min(phases_by_order.keys())
-    phases_by_order[first_order].status = models.PhaseStatus.active
-    first_phase_indices = phase_task_indices.get(first_order, set())
-    for i, task in enumerate(all_tasks):
-        if i not in tasks_with_deps and i in first_phase_indices:
-            task.status = models.TaskStatus.ready
-        # All other tasks remain in default waiting status
-
-    # Assign worker to project if session had a worker selected
-    if session.worker_id:
-        worker_result = await db.execute(
-            select(models.Worker).where(models.Worker.id == session.worker_id)
+        # Store finalize prompt and response as internal messages for auditability
+        await write_session_repo.add_message(
+            session.id,
+            models.MessageRole.user,
+            finalize_prompt,
+            message_type=models.MessageType.internal,
         )
-        worker = worker_result.scalar_one_or_none()
-        if worker:
-            worker.project_id = project.id
+        await write_session_repo.add_message(
+            session.id,
+            models.MessageRole.assistant,
+            json.dumps(result, ensure_ascii=False),
+            message_type=models.MessageType.internal,
+        )
 
-    # Update session status and link to project
-    session.status = models.DesignSessionStatus.finalized
-    session.project_id = project.id
-    await session_repo.commit()
+        # Build llm_config for the project
+        project_llm_config: dict[str, Any] = {
+            "architect": llm_config_dict,
+        }
+        if body.pm_llm_config:
+            project_llm_config["pm"] = {
+                "api_key": body.pm_llm_config.api_key,
+            }
+            if body.pm_llm_config.model:
+                project_llm_config["pm"]["model"] = body.pm_llm_config.model
+            if body.pm_llm_config.base_url:
+                project_llm_config["pm"]["base_url"] = body.pm_llm_config.base_url
 
-    # Reload project with phases
-    project_repo = ProjectRepository(db)
-    loaded_project = await project_repo.get_by_id(project.id)
-    return schemas.ProjectResponse.model_validate(loaded_project)
+        # Create project
+        project = models.Project(
+            name=result.get("project_name", "Untitled Project"),
+            description=result.get("project_description", ""),
+            repo_path=body.repo_path,
+            status=models.ProjectStatus.design,
+            llm_config=project_llm_config,
+        )
+        write_db.add(project)
+        await write_db.flush()
+
+        # Create phases and tasks, collecting all tasks in a flat list for dependency resolution
+        all_tasks: list[models.Task] = []
+        phases_data = result.get("phases", [])
+        phases_by_order: dict[int, models.Phase] = {}
+
+        # Track which flat indices belong to each phase
+        phase_task_indices: dict[int, set[int]] = {}  # phase_order -> set of flat indices
+        flat_idx_counter = 0
+
+        for phase_order, phase_data in enumerate(phases_data, start=1):
+            phase_name = phase_data.get("name", f"Phase {phase_order}")
+            branch_name = f"phase/{_slugify(phase_name)}"
+
+            phase = models.Phase(
+                project_id=project.id,
+                name=phase_name,
+                description=phase_data.get("description"),
+                branch_name=branch_name,
+                order=phase_order,
+            )
+            write_db.add(phase)
+            await write_db.flush()
+            phases_by_order[phase_order] = phase
+
+            task_indices: set[int] = set()
+            for task_data in phase_data.get("tasks", []):
+                priority_str = task_data.get("priority", "medium")
+                try:
+                    priority = models.TaskPriority(priority_str)
+                except ValueError:
+                    priority = models.TaskPriority.medium
+
+                task = models.Task(
+                    project_id=project.id,
+                    phase_id=phase.id,
+                    title=task_data.get("title", "Untitled Task"),
+                    description=task_data.get("description"),
+                    priority=priority,
+                    worker_prompt={"prompt": task_data.get("worker_prompt", "")},
+                    qa_prompt={"prompt": task_data.get("qa_prompt", "")},
+                    branch_name=branch_name,
+                )
+                write_db.add(task)
+                await write_db.flush()
+                all_tasks.append(task)
+                task_indices.add(flat_idx_counter)
+                flat_idx_counter += 1
+
+            phase_task_indices[phase_order] = task_indices
+
+        # Wire up dependencies using depends_on_indices
+        task_repo = TaskRepository(write_db)
+        tasks_with_deps: set[int] = set()
+        flat_index = 0
+        for phase_data in phases_data:
+            for task_data in phase_data.get("tasks", []):
+                depends_on_indices = task_data.get("depends_on_indices", [])
+                if depends_on_indices:
+                    dep_ids = []
+                    for idx in depends_on_indices:
+                        if 0 <= idx < len(all_tasks):
+                            dep_ids.append(all_tasks[idx].id)
+                    if dep_ids:
+                        await task_repo.add_dependencies(all_tasks[flat_index].id, dep_ids)
+                        all_tasks[flat_index].status = models.TaskStatus.waiting
+                        tasks_with_deps.add(flat_index)
+                flat_index += 1
+
+        # Phase-gated task status: only first phase is active, its dep-free tasks are ready
+        if not phases_by_order:
+            raise HTTPException(status_code=400, detail="Design must contain at least one phase with tasks")
+
+        first_order = min(phases_by_order.keys())
+        phases_by_order[first_order].status = models.PhaseStatus.active
+        first_phase_indices = phase_task_indices.get(first_order, set())
+        for i, task in enumerate(all_tasks):
+            if i not in tasks_with_deps and i in first_phase_indices:
+                task.status = models.TaskStatus.ready
+            # All other tasks remain in default waiting status
+
+        # Assign worker to project if session had a worker selected
+        if session_worker_id:
+            worker_result = await write_db.execute(
+                select(models.Worker).where(models.Worker.id == session_worker_id)
+            )
+            worker = worker_result.scalar_one_or_none()
+            if worker:
+                worker.project_id = project.id
+
+        # Update session status and link to project
+        session.status = models.DesignSessionStatus.finalized
+        session.project_id = project.id
+        await write_db.commit()
+
+        # Reload project with phases
+        project_repo = ProjectRepository(write_db)
+        loaded_project = await project_repo.get_by_id(project.id)
+        return schemas.ProjectResponse.model_validate(loaded_project)
 
 
 # ── 6. Redesign Task ────────────────────────────────────────────────

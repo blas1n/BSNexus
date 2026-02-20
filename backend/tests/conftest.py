@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -39,11 +39,21 @@ async def db_engine():
 
 
 @pytest_asyncio.fixture
-async def db_session(db_engine):
-    """Create a test database session."""
-    session_maker = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
-    async with session_maker() as session:
-        yield session
+async def test_session_maker(db_engine):
+    """Create a session maker bound to the test database engine."""
+    return async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+
+
+@pytest_asyncio.fixture
+async def db_session(test_session_maker):
+    """Create a test database session.
+
+    Also patches async_session in the architect module so that
+    finalize_design's fresh-session write scope uses the test DB.
+    """
+    with patch("backend.src.api.architect.async_session", test_session_maker):
+        async with test_session_maker() as session:
+            yield session
 
 
 @pytest_asyncio.fixture
@@ -67,6 +77,9 @@ async def client(db_session, mock_stream_manager):
 
     # Disable rate limiting in tests to prevent cross-test interference
     app.state.rate_limit_disabled = True
+
+    # NOTE: async_session is already patched via the db_session fixture,
+    # so finalize_design's fresh-session write scope uses the test DB.
 
     async with AsyncClient(
         transport=ASGITransport(app=app),

@@ -148,7 +148,8 @@ async def batch_delete_projects(
         sa_delete(models.Project).where(models.Project.id.in_(body.ids))
     )
     await db.commit()
-    return schemas.BatchDeleteResponse(deleted=result.rowcount)
+    deleted: int = result.rowcount if result.rowcount and result.rowcount > 0 else 0  # type: ignore[attr-defined]
+    return schemas.BatchDeleteResponse(deleted=deleted)
 
 
 # -- Phase Endpoints -----------------------------------------------------------
