@@ -1,4 +1,6 @@
 import asyncio
+import shutil
+import sys
 import tempfile
 from pathlib import Path
 
@@ -12,6 +14,25 @@ class ClaudeCodeExecutor(BaseExecutor):
 
     def __init__(self, workspace_dir: str = "/workspace") -> None:
         self.workspace_dir = workspace_dir
+        self._claude_cmd = self._resolve_claude_cmd()
+
+    @staticmethod
+    def _resolve_claude_cmd() -> str:
+        """Resolve the claude CLI command path.
+
+        On Windows, npm global installs create .cmd shims that
+        asyncio.create_subprocess_exec cannot find without a shell.
+        Use shutil.which to resolve the actual path.
+        """
+        resolved = shutil.which("claude")
+        if resolved:
+            return resolved
+        # Windows: try claude.cmd explicitly
+        if sys.platform == "win32":
+            resolved = shutil.which("claude.cmd")
+            if resolved:
+                return resolved
+        return "claude"  # fallback, let OS try
 
     async def execute(self, prompt: str, context: dict) -> ExecutionResult:
         """Execute coding task via Claude Code CLI"""
@@ -28,9 +49,9 @@ class ClaudeCodeExecutor(BaseExecutor):
             prompt_file = f.name
 
         try:
-            log.info("    claude-cli: starting  task_id=%s cwd=%s", task_id, workspace)
+            log.info("    claude-cli: starting  task_id=%s cwd=%s cmd=%s", task_id, workspace, self._claude_cmd)
             process = await asyncio.create_subprocess_exec(
-                "claude",
+                self._claude_cmd,
                 "--print",
                 "--dangerously-skip-permissions",
                 "-p",

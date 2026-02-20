@@ -29,12 +29,12 @@ def make_task(status: TaskStatus = TaskStatus.waiting, **kwargs) -> Task:
         worker_id=kwargs.get("worker_id", None),
         reviewer_id=kwargs.get("reviewer_id", None),
         worker_prompt=kwargs.get("worker_prompt", None),
-        qa_prompt=None,
+        qa_prompt=kwargs.get("qa_prompt", None),
         branch_name=kwargs.get("branch_name", None),
         commit_hash=None,
         qa_result=None,
         output_path=None,
-        error_message=None,
+        error_message=kwargs.get("error_message", None),
         retry_count=kwargs.get("retry_count", 0),
         max_retries=kwargs.get("max_retries", 3),
         qa_feedback_history=kwargs.get("qa_feedback_history", None),
@@ -55,6 +55,11 @@ def mock_stream() -> AsyncMock:
     manager.publish_board_event = AsyncMock()
     manager.consume = AsyncMock(return_value=[])
     manager.acknowledge = AsyncMock()
+    # Redis client mock for ephemeral counters
+    manager.redis = AsyncMock()
+    manager.redis.get = AsyncMock(return_value=None)  # default: counter not set
+    manager.redis.incr = AsyncMock(return_value=1)
+    manager.redis.expire = AsyncMock()
     return manager
 
 
@@ -310,7 +315,7 @@ async def test_process_result_qa_failure_retries_when_under_max(
 
     with (
         patch("backend.src.core.orchestrator.TaskRepository") as MockRepo,
-        patch("backend.src.repositories.project_repository.ProjectRepository") as MockProjectRepo,
+        patch("backend.src.core.orchestrator.ProjectRepository") as MockProjectRepo,
     ):
         mock_repo_instance = AsyncMock()
         mock_repo_instance.get_by_id = AsyncMock(return_value=task)
@@ -386,6 +391,7 @@ async def test_qa_feedback_history_accumulates_entries(
     # First execution failure
     await orchestrator._handle_execution_failure(task, mock_db, "worker-1", "Compile error")
     assert task.retry_count == 1
+    assert task.qa_feedback_history is not None
     assert len(task.qa_feedback_history) == 1
     assert task.qa_feedback_history[0]["type"] == "execution_failure"
     assert task.qa_feedback_history[0]["error"] == "Compile error"
@@ -396,6 +402,7 @@ async def test_qa_feedback_history_accumulates_entries(
     # Second execution failure on the same task
     await orchestrator._handle_execution_failure(task, mock_db, "worker-1", "Link error")
     assert task.retry_count == 2
+    assert task.qa_feedback_history is not None
     assert len(task.qa_feedback_history) == 2
     assert task.qa_feedback_history[1]["type"] == "execution_failure"
     assert task.qa_feedback_history[1]["error"] == "Link error"
@@ -418,7 +425,7 @@ async def test_qa_feedback_history_accumulates_qa_failures(
         project_id=project_id,
     )
 
-    with patch("backend.src.repositories.project_repository.ProjectRepository") as MockProjectRepo:
+    with patch("backend.src.core.orchestrator.ProjectRepository") as MockProjectRepo:
         mock_project = MagicMock()
         mock_project.repo_path = "/repos/test"
         mock_project_repo_instance = AsyncMock()
@@ -428,6 +435,7 @@ async def test_qa_feedback_history_accumulates_qa_failures(
         await orchestrator._handle_qa_failure(task, mock_db, "reviewer-1", "Missing tests")
 
     assert task.retry_count == 1
+    assert task.qa_feedback_history is not None
     assert len(task.qa_feedback_history) == 1
     assert task.qa_feedback_history[0]["type"] == "qa_failure"
     assert task.qa_feedback_history[0]["feedback"] == "Missing tests"
@@ -466,7 +474,7 @@ async def test_requeue_with_feedback_publishes_message(
         worker_prompt="Write the login page",
     )
 
-    with patch("backend.src.repositories.project_repository.ProjectRepository") as MockProjectRepo:
+    with patch("backend.src.core.orchestrator.ProjectRepository") as MockProjectRepo:
         mock_project = MagicMock()
         mock_project.repo_path = "/repos/myproject"
         mock_project_repo_instance = AsyncMock()
@@ -504,7 +512,7 @@ async def test_requeue_with_feedback_without_optional_fields(
         worker_prompt=None,
     )
 
-    with patch("backend.src.repositories.project_repository.ProjectRepository") as MockProjectRepo:
+    with patch("backend.src.core.orchestrator.ProjectRepository") as MockProjectRepo:
         mock_project = MagicMock()
         mock_project.repo_path = "/repos/test"
         mock_project_repo_instance = AsyncMock()
@@ -621,3 +629,355 @@ def test_priority_order_values() -> None:
     assert PRIORITY_ORDER[TaskPriority.high] == 1
     assert PRIORITY_ORDER[TaskPriority.medium] == 2
     assert PRIORITY_ORDER[TaskPriority.low] == 3
+
+
+# -- _process_escalation: auto-redesign ----------------------------------------
+
+
+async def test_process_escalation_modify(
+    orchestrator: PMOrchestrator, mock_db: AsyncMock, mock_state_machine: AsyncMock, mock_stream: AsyncMock
+) -> None:
+    """LLM returning modify action should update task prompts and transition to waiting."""
+    project_id = uuid.uuid4()
+    task = make_task(
+        status=TaskStatus.redesign,
+        project_id=project_id,
+        retry_count=3,
+        max_retries=3,
+        worker_prompt={"prompt": "old prompt"},
+        qa_prompt={"prompt": "old qa"},
+        error_message="Build failed",
+        qa_feedback_history=[{"type": "execution_failure", "attempt": 3, "error": "Build failed"}],
+    )
+
+    msg = {
+        "task_id": str(task.id),
+        "project_id": str(project_id),
+        "_message_id": "esc-1",
+    }
+
+    mock_project = MagicMock()
+    mock_project.id = project_id
+    mock_project.llm_config = {"architect": {"api_key": "test-key", "model": "test-model"}}
+
+    llm_result = {
+        "action": "modify",
+        "reasoning": "Prompt was unclear",
+        "title": "Updated Title",
+        "description": "Updated desc",
+        "worker_prompt": "New improved prompt",
+        "qa_prompt": "New qa checklist",
+        "split_tasks": [],
+    }
+
+    with (
+        patch("backend.src.core.orchestrator.TaskRepository") as MockTaskRepo,
+        patch("backend.src.core.orchestrator.ProjectRepository") as MockProjectRepo,
+        patch("backend.src.core.orchestrator.create_llm_client_from_project") as mock_create_llm,
+        patch("backend.src.core.orchestrator.get_prompt") as mock_get_prompt,
+    ):
+        MockTaskRepo.return_value = AsyncMock(get_by_id=AsyncMock(return_value=task))
+        MockProjectRepo.return_value = AsyncMock(get_by_id=AsyncMock(return_value=mock_project))
+        mock_llm_client = AsyncMock()
+        mock_llm_client.structured_output = AsyncMock(return_value=llm_result)
+        mock_create_llm.return_value = mock_llm_client
+        mock_get_prompt.return_value = "mocked prompt {title} {description} {priority} {retry_count} {max_retries} {branch_name} {worker_prompt} {qa_prompt} {failure_history} {error_message}"
+
+        await orchestrator._process_escalation(msg, mock_db)
+
+    # Verify task fields updated
+    assert task.title == "Updated Title"
+    assert task.description == "Updated desc"
+    assert task.worker_prompt == {"prompt": "New improved prompt"}
+    assert task.qa_prompt == {"prompt": "New qa checklist"}
+    assert task.retry_count == 0
+    assert task.qa_feedback_history is None
+    assert task.error_message is None
+
+    # Verify Redis counter incremented
+    mock_stream.redis.incr.assert_called_once_with(f"task:{task.id}:auto_redesign_count")
+    mock_stream.redis.expire.assert_called_once()
+
+    # Verify transition to waiting
+    mock_state_machine.transition.assert_called_once()
+    call_kwargs = mock_state_machine.transition.call_args[1]
+    assert call_kwargs["new_status"] == TaskStatus.waiting
+    assert "Auto-redesigned" in call_kwargs["reason"]
+
+    # Verify board event
+    mock_stream.publish_board_event.assert_called()
+    event_call = mock_stream.publish_board_event.call_args
+    assert event_call[0][0] == "auto_redesign_applied"
+    assert event_call[0][1]["action"] == "modify"
+
+
+async def test_process_escalation_delete(
+    orchestrator: PMOrchestrator, mock_db: AsyncMock, mock_state_machine: AsyncMock, mock_stream: AsyncMock
+) -> None:
+    """LLM returning delete action should transition task to done."""
+    project_id = uuid.uuid4()
+    task = make_task(status=TaskStatus.redesign, project_id=project_id)
+
+    msg = {"task_id": str(task.id), "project_id": str(project_id), "_message_id": "esc-2"}
+
+    mock_project = MagicMock()
+    mock_project.id = project_id
+    mock_project.llm_config = {"architect": {"api_key": "test-key"}}
+
+    llm_result = {"action": "delete", "reasoning": "Task is obsolete", "split_tasks": []}
+
+    with (
+        patch("backend.src.core.orchestrator.TaskRepository") as MockTaskRepo,
+        patch("backend.src.core.orchestrator.ProjectRepository") as MockProjectRepo,
+        patch("backend.src.core.orchestrator.create_llm_client_from_project") as mock_create_llm,
+        patch("backend.src.core.orchestrator.get_prompt") as mock_get_prompt,
+    ):
+        MockTaskRepo.return_value = AsyncMock(get_by_id=AsyncMock(return_value=task))
+        MockProjectRepo.return_value = AsyncMock(get_by_id=AsyncMock(return_value=mock_project))
+        mock_llm_client = AsyncMock()
+        mock_llm_client.structured_output = AsyncMock(return_value=llm_result)
+        mock_create_llm.return_value = mock_llm_client
+        mock_get_prompt.return_value = "mocked {title} {description} {priority} {retry_count} {max_retries} {branch_name} {worker_prompt} {qa_prompt} {failure_history} {error_message}"
+
+        await orchestrator._process_escalation(msg, mock_db)
+
+    mock_state_machine.transition.assert_called_once()
+    call_kwargs = mock_state_machine.transition.call_args[1]
+    assert call_kwargs["new_status"] == TaskStatus.done
+    assert "delete" in call_kwargs["reason"].lower()
+
+    # Verify Redis counter incremented
+    mock_stream.redis.incr.assert_called_once_with(f"task:{task.id}:auto_redesign_count")
+
+
+async def test_process_escalation_split(
+    orchestrator: PMOrchestrator, mock_db: AsyncMock, mock_state_machine: AsyncMock, mock_stream: AsyncMock
+) -> None:
+    """LLM returning split action should mark original done and create sub-tasks."""
+    project_id = uuid.uuid4()
+    phase_id = uuid.uuid4()
+    task = make_task(
+        status=TaskStatus.redesign,
+        project_id=project_id,
+        phase_id=phase_id,
+        branch_name="feat/test",
+    )
+
+    msg = {"task_id": str(task.id), "project_id": str(project_id), "_message_id": "esc-3"}
+
+    mock_project = MagicMock()
+    mock_project.id = project_id
+    mock_project.llm_config = {"architect": {"api_key": "test-key"}}
+
+    llm_result = {
+        "action": "split",
+        "reasoning": "Task too large",
+        "split_tasks": [
+            {"title": "Sub-task 1", "description": "First part", "priority": "high", "worker_prompt": "Do A", "qa_prompt": "Check A"},
+            {"title": "Sub-task 2", "description": "Second part", "priority": "medium", "worker_prompt": "Do B", "qa_prompt": "Check B"},
+        ],
+    }
+
+    with (
+        patch("backend.src.core.orchestrator.TaskRepository") as MockTaskRepo,
+        patch("backend.src.core.orchestrator.ProjectRepository") as MockProjectRepo,
+        patch("backend.src.core.orchestrator.create_llm_client_from_project") as mock_create_llm,
+        patch("backend.src.core.orchestrator.get_prompt") as mock_get_prompt,
+    ):
+        MockTaskRepo.return_value = AsyncMock(get_by_id=AsyncMock(return_value=task))
+        MockProjectRepo.return_value = AsyncMock(get_by_id=AsyncMock(return_value=mock_project))
+        mock_llm_client = AsyncMock()
+        mock_llm_client.structured_output = AsyncMock(return_value=llm_result)
+        mock_create_llm.return_value = mock_llm_client
+        mock_get_prompt.return_value = "mocked {title} {description} {priority} {retry_count} {max_retries} {branch_name} {worker_prompt} {qa_prompt} {failure_history} {error_message}"
+
+        await orchestrator._process_escalation(msg, mock_db)
+
+    # Original task should be transitioned to done
+    mock_state_machine.transition.assert_called_once()
+    call_kwargs = mock_state_machine.transition.call_args[1]
+    assert call_kwargs["new_status"] == TaskStatus.done
+    assert "Split into 2 sub-tasks" in call_kwargs["reason"]
+
+    # Two new tasks should be added to db
+    assert mock_db.add.call_count == 2
+    added_tasks = [call[0][0] for call in mock_db.add.call_args_list]
+    assert added_tasks[0].title == "Sub-task 1"
+    assert added_tasks[0].project_id == project_id
+    assert added_tasks[0].phase_id == phase_id
+    assert added_tasks[0].branch_name == "feat/test"
+    assert added_tasks[1].title == "Sub-task 2"
+
+    # Verify Redis counter incremented
+    mock_stream.redis.incr.assert_called_once_with(f"task:{task.id}:auto_redesign_count")
+
+
+async def test_process_escalation_max_auto_redesigns(
+    orchestrator: PMOrchestrator, mock_db: AsyncMock, mock_state_machine: AsyncMock, mock_stream: AsyncMock
+) -> None:
+    """When Redis auto_redesign_count >= max, should skip LLM and publish failure event."""
+    project_id = uuid.uuid4()
+    task = make_task(status=TaskStatus.redesign, project_id=project_id)
+
+    msg = {"task_id": str(task.id), "project_id": str(project_id), "_message_id": "esc-4"}
+
+    # Set Redis counter to max
+    mock_stream.redis.get = AsyncMock(return_value=b"2")
+
+    with (
+        patch("backend.src.core.orchestrator.TaskRepository") as MockTaskRepo,
+        patch("backend.src.core.orchestrator.settings") as mock_settings,
+    ):
+        mock_settings.max_auto_redesigns = 2
+        MockTaskRepo.return_value = AsyncMock(get_by_id=AsyncMock(return_value=task))
+
+        await orchestrator._process_escalation(msg, mock_db)
+
+    # No LLM call, no transition
+    mock_state_machine.transition.assert_not_called()
+
+    # Should publish failure event
+    mock_stream.publish_board_event.assert_called_once()
+    event_call = mock_stream.publish_board_event.call_args
+    assert event_call[0][0] == "auto_redesign_failed"
+    assert "Max auto-redesign attempts" in event_call[0][1]["reason"]
+
+
+async def test_process_escalation_llm_error(
+    orchestrator: PMOrchestrator, mock_db: AsyncMock, mock_state_machine: AsyncMock, mock_stream: AsyncMock
+) -> None:
+    """When LLM call fails, should publish failure event and leave task in redesign."""
+    from backend.src.core.llm_client import LLMError
+
+    project_id = uuid.uuid4()
+    task = make_task(status=TaskStatus.redesign, project_id=project_id)
+
+    msg = {"task_id": str(task.id), "project_id": str(project_id), "_message_id": "esc-5"}
+
+    mock_project = MagicMock()
+    mock_project.id = project_id
+    mock_project.llm_config = {"architect": {"api_key": "test-key"}}
+
+    with (
+        patch("backend.src.core.orchestrator.TaskRepository") as MockTaskRepo,
+        patch("backend.src.core.orchestrator.ProjectRepository") as MockProjectRepo,
+        patch("backend.src.core.orchestrator.create_llm_client_from_project") as mock_create_llm,
+        patch("backend.src.core.orchestrator.get_prompt") as mock_get_prompt,
+    ):
+        MockTaskRepo.return_value = AsyncMock(get_by_id=AsyncMock(return_value=task))
+        MockProjectRepo.return_value = AsyncMock(get_by_id=AsyncMock(return_value=mock_project))
+        mock_llm_client = AsyncMock()
+        mock_llm_client.structured_output = AsyncMock(side_effect=LLMError("API timeout"))
+        mock_create_llm.return_value = mock_llm_client
+        mock_get_prompt.return_value = "mocked {title} {description} {priority} {retry_count} {max_retries} {branch_name} {worker_prompt} {qa_prompt} {failure_history} {error_message}"
+
+        await orchestrator._process_escalation(msg, mock_db)
+
+    # No state transition
+    mock_state_machine.transition.assert_not_called()
+
+    # Should publish failure event
+    mock_stream.publish_board_event.assert_called_once()
+    event_call = mock_stream.publish_board_event.call_args
+    assert event_call[0][0] == "auto_redesign_failed"
+    assert "LLM error" in event_call[0][1]["reason"]
+
+    # Redis counter should NOT be incremented
+    mock_stream.redis.incr.assert_not_called()
+
+
+async def test_process_escalation_skips_other_project(
+    orchestrator: PMOrchestrator, mock_db: AsyncMock, mock_state_machine: AsyncMock
+) -> None:
+    """Task not in redesign status should be skipped."""
+    project_id = uuid.uuid4()
+    task = make_task(status=TaskStatus.done, project_id=project_id)
+
+    msg = {"task_id": str(task.id), "project_id": str(project_id), "_message_id": "esc-6"}
+
+    with patch("backend.src.core.orchestrator.TaskRepository") as MockTaskRepo:
+        MockTaskRepo.return_value = AsyncMock(get_by_id=AsyncMock(return_value=task))
+
+        await orchestrator._process_escalation(msg, mock_db)
+
+    # No transition since task is not in redesign status
+    mock_state_machine.transition.assert_not_called()
+
+
+async def test_process_escalation_task_not_found(
+    orchestrator: PMOrchestrator, mock_db: AsyncMock, mock_state_machine: AsyncMock
+) -> None:
+    """Missing task should be skipped without error."""
+    msg = {"task_id": str(uuid.uuid4()), "project_id": str(uuid.uuid4()), "_message_id": "esc-7"}
+
+    with patch("backend.src.core.orchestrator.TaskRepository") as MockTaskRepo:
+        MockTaskRepo.return_value = AsyncMock(get_by_id=AsyncMock(return_value=None))
+
+        await orchestrator._process_escalation(msg, mock_db)
+
+    mock_state_machine.transition.assert_not_called()
+
+
+async def test_redesign_prompt_formats_correctly() -> None:
+    """The redesign prompt template should format with all placeholders."""
+    from backend.src.prompts.loader import get_prompt
+
+    prompt_template = get_prompt("architect", "redesign")
+    formatted = prompt_template.format(
+        title="Test Task",
+        description="A test task",
+        priority="high",
+        retry_count=3,
+        max_retries=3,
+        branch_name="feat/test",
+        worker_prompt="Do the thing",
+        qa_prompt="Check the thing",
+        failure_history="[]",
+        error_message="Build failed",
+    )
+    assert "Test Task" in formatted
+    assert "Build failed" in formatted
+    assert "Do the thing" in formatted
+    # Ensure literal braces are rendered (not template syntax)
+    assert '"action"' in formatted
+
+
+async def test_process_escalation_environment_error_skips_llm(
+    orchestrator: PMOrchestrator, mock_db: AsyncMock, mock_state_machine: AsyncMock, mock_stream: AsyncMock
+) -> None:
+    """Deterministic environment errors should skip auto-redesign and publish failure immediately."""
+    project_id = uuid.uuid4()
+    task = make_task(
+        status=TaskStatus.redesign,
+        project_id=project_id,
+        error_message="[WinError 2] 지정된 파일을 찾을 수 없습니다",
+    )
+
+    msg = {"task_id": str(task.id), "project_id": str(project_id), "_message_id": "esc-env"}
+
+    with patch("backend.src.core.orchestrator.TaskRepository") as MockTaskRepo:
+        MockTaskRepo.return_value = AsyncMock(get_by_id=AsyncMock(return_value=task))
+        await orchestrator._process_escalation(msg, mock_db)
+
+    # No LLM call, no transition
+    mock_state_machine.transition.assert_not_called()
+    # Redis counter should not be touched
+    mock_stream.redis.incr.assert_not_called()
+    # Should publish failure event with environment error reason
+    mock_stream.publish_board_event.assert_called_once()
+    event_call = mock_stream.publish_board_event.call_args
+    assert event_call[0][0] == "auto_redesign_failed"
+    assert "Environment error" in event_call[0][1]["reason"]
+
+
+def test_is_environment_error() -> None:
+    """_is_environment_error should detect known deterministic error patterns."""
+    assert PMOrchestrator._is_environment_error("[WinError 2] File not found") is True
+    assert PMOrchestrator._is_environment_error("FileNotFoundError: No such file") is True
+    assert PMOrchestrator._is_environment_error("ENOENT: no such file or directory") is True
+    assert PMOrchestrator._is_environment_error("PermissionError: access denied") is True
+    assert PMOrchestrator._is_environment_error("command not found: claude") is True
+    assert PMOrchestrator._is_environment_error("Build failed: tests not passing") is False
+    assert PMOrchestrator._is_environment_error("TypeError: cannot read property") is False
+    assert PMOrchestrator._is_environment_error(None) is False
+    assert PMOrchestrator._is_environment_error("") is False

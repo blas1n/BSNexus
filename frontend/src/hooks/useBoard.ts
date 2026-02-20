@@ -5,7 +5,7 @@ import { useBoardStore } from '../stores/boardStore'
 import type { Task } from '../types/task'
 
 export function useBoard(projectId: string) {
-  const { setBoard, moveTask, updateTask, assignWorker, setConnected } = useBoardStore()
+  const { setBoard, moveTask, updateTask, assignWorker, setConnected, addManualRedesignTaskId } = useBoardStore()
   const [isConnected, setLocalConnected] = useState(false)
   const sourceRef = useRef<EventSource | null>(null)
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -50,11 +50,18 @@ export function useBoard(projectId: string) {
           }
           break
         case 'refresh':
+        case 'auto_redesign_applied':
+          refetchRef.current()
+          break
+        case 'auto_redesign_failed':
+          if (data.task_id) {
+            addManualRedesignTaskId(data.task_id)
+          }
           refetchRef.current()
           break
       }
     },
-    [moveTask, updateTask, assignWorker],
+    [moveTask, updateTask, assignWorker, addManualRedesignTaskId],
   )
 
   const handleEventRef = useRef(handleEvent)

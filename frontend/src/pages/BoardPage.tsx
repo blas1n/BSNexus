@@ -55,10 +55,7 @@ function BoardContent({ projectId }: { projectId: string }) {
   const isRedesigning = redesignTasks.length > 0
 
   const handleRedesignDone = () => {
-    // Refresh the board data
     queryClient.invalidateQueries({ queryKey: ['board', projectId] })
-    // Force a re-fetch by refreshing the page state
-    window.location.reload()
   }
 
   if (isLoading) {

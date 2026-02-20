@@ -105,3 +105,76 @@ add_task: |
     "worker_prompt": "Detailed instructions for the coding agent...",
     "qa_prompt": "Review checklist for the code reviewer..."
   }}
+
+redesign: |
+  A task has repeatedly failed execution or QA review and needs your intervention.
+  Analyze the failure history and decide the best course of action.
+
+  ## Failed Task
+  - **Title**: {title}
+  - **Description**: {description}
+  - **Priority**: {priority}
+  - **Retry Count**: {retry_count}/{max_retries}
+  - **Branch**: {branch_name}
+
+  ## Current Worker Prompt
+  {worker_prompt}
+
+  ## Current QA Prompt
+  {qa_prompt}
+
+  ## Failure History
+  {failure_history}
+
+  ## Final Error Message
+  {error_message}
+
+  ## Available Actions
+
+  1. **modify** - Rewrite the worker prompt and/or QA prompt to address the root cause
+     of failures. Use this when the task goal is correct but the instructions are unclear,
+     incomplete, or lead to errors.
+
+  2. **delete** - Remove this task entirely. Use this only when the task is no longer
+     needed, is a duplicate, or the requirement is not achievable.
+
+  3. **split** - Break this task into 2-4 smaller, more focused sub-tasks. Use this when
+     the original task is too large or complex and the failures indicate the worker cannot
+     handle it as a single unit.
+
+  ## Instructions
+  - Carefully analyze the failure pattern across all retry attempts.
+  - Choose the action most likely to resolve the issue.
+  - For "modify": provide improved worker_prompt and qa_prompt that directly address the failures.
+  - For "split": create 2-4 sub-tasks that together accomplish the original goal.
+  - For "delete": only if the task is truly not achievable or not needed.
+
+  Return JSON in this exact format:
+  {{
+    "action": "modify",
+    "reasoning": "Brief explanation of your decision",
+    "title": "Updated title or null to keep current",
+    "description": "Updated description or null to keep current",
+    "worker_prompt": "Revised detailed instructions for the coding agent",
+    "qa_prompt": "Revised review checklist for the code reviewer",
+    "split_tasks": []
+  }}
+
+  For split action, populate split_tasks instead:
+  {{
+    "action": "split",
+    "reasoning": "Brief explanation of your decision",
+    "title": null,
+    "description": null,
+    "worker_prompt": null,
+    "qa_prompt": null,
+    "split_tasks": [
+      {{
+        "title": "Sub-task title",
+        "description": "Sub-task description",
+        "priority": "high|medium|low|critical",
+        "worker_prompt": "Detailed instructions for the coding agent",
+        "qa_prompt": "Review checklist for the code reviewer"
+      }}
+    ]
+  }}

@@ -33,5 +33,8 @@ class Settings(BaseSettings):
     default_llm_model: Optional[str] = None
     default_llm_base_url: Optional[str] = None
 
+    # Auto-redesign
+    max_auto_redesigns: int = 2
+
 
 settings = Settings()

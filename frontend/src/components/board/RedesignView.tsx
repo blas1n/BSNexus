@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import type { Task } from '../../types/task'
 import { architectApi } from '../../api/architect'
+import { useBoardStore } from '../../stores/boardStore'
 import { Badge, Button } from '../common'
 
 interface Props {
@@ -9,6 +10,80 @@ interface Props {
 }
 
 export default function RedesignView({ tasks, onDone }: Props) {
+  const { manualRedesignTaskIds } = useBoardStore()
+
+  // Split tasks: manual = flagged by auto_redesign_failed event, auto = the rest
+  const manualTasks = useMemo(
+    () => tasks.filter((t) => manualRedesignTaskIds.has(t.id)),
+    [tasks, manualRedesignTaskIds],
+  )
+  const autoTasks = useMemo(
+    () => tasks.filter((t) => !manualRedesignTaskIds.has(t.id)),
+    [tasks, manualRedesignTaskIds],
+  )
+
+  // If no redesign tasks remain, auto-return to board
+  useEffect(() => {
+    if (tasks.length === 0) {
+      onDone()
+    }
+  }, [tasks.length, onDone])
+
+  // If all tasks are auto-processing (no manual ones), show loading screen
+  if (manualTasks.length === 0) {
+    return <AutoRedesignLoading tasks={autoTasks} />
+  }
+
+  // If there are manual tasks, show manual intervention UI
+  return <ManualRedesignView tasks={manualTasks} autoTasks={autoTasks} onDone={onDone} />
+}
+
+// ── Auto-Redesign Loading Screen ──────────────────────────────────
+
+function AutoRedesignLoading({ tasks }: { tasks: Task[] }) {
+  return (
+    <div className="flex flex-col items-center justify-center h-[calc(100vh-8rem)] bg-bg-primary">
+      {/* Spinner */}
+      <div className="mb-8">
+        <div className="w-16 h-16 border-4 border-border rounded-full animate-spin" style={{ borderTopColor: 'var(--accent)' }} />
+      </div>
+
+      {/* Message */}
+      <h2 className="text-xl font-semibold text-text-primary mb-2">
+        Architect is redesigning {tasks.length} task{tasks.length !== 1 ? 's' : ''}...
+      </h2>
+      <p className="text-sm text-text-secondary mb-8">
+        Analyzing failure patterns and generating improved instructions.
+      </p>
+
+      {/* Task list (compact) */}
+      <div className="w-full max-w-md space-y-2">
+        {tasks.map((task) => (
+          <div
+            key={task.id}
+            className="flex items-center gap-3 rounded-lg bg-bg-elevated p-3"
+          >
+            <div className="w-4 h-4 border-2 border-border rounded-full animate-spin flex-shrink-0" style={{ borderTopColor: 'var(--accent)' }} />
+            <span className="text-sm text-text-primary truncate">{task.title}</span>
+            <Badge color="redesign" label={`${task.retry_count}/${task.max_retries}`} size="sm" />
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ── Manual Redesign View (fallback when auto-redesign limit exceeded) ──
+
+function ManualRedesignView({
+  tasks,
+  autoTasks,
+  onDone,
+}: {
+  tasks: Task[]
+  autoTasks: Task[]
+  onDone: () => void
+}) {
   const [selectedId, setSelectedId] = useState<string>(tasks[0]?.id || '')
   const [editPrompt, setEditPrompt] = useState('')
   const [editTitle, setEditTitle] = useState('')
@@ -96,13 +171,30 @@ export default function RedesignView({ tasks, onDone }: Props) {
       <div className="w-80 border-r border-border overflow-y-auto">
         <div className="p-4 border-b border-border">
           <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold text-text-primary">Redesign Required</h2>
+            <h2 className="text-lg font-semibold text-text-primary">Manual Intervention</h2>
             <span className="text-xs text-text-tertiary">{tasks.length} task(s)</span>
           </div>
           <p className="text-xs text-text-secondary mt-1">
-            These tasks exceeded max retries and need Architect intervention.
+            Auto-redesign exhausted. Manual action required.
           </p>
         </div>
+
+        {/* Auto-processing tasks (if any still pending) */}
+        {autoTasks.length > 0 && (
+          <div className="p-4 border-b border-border">
+            <p className="text-xs text-text-secondary mb-2">
+              Auto-redesigning {autoTasks.length} other task(s)...
+            </p>
+            {autoTasks.map((task) => (
+              <div key={task.id} className="flex items-center gap-2 py-1">
+                <div className="w-3 h-3 border-2 border-border rounded-full animate-spin flex-shrink-0" style={{ borderTopColor: 'var(--accent)' }} />
+                <span className="text-xs text-text-tertiary truncate">{task.title}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Manual tasks */}
         <div className="p-2 space-y-1">
           {tasks.map((task) => (
             <button

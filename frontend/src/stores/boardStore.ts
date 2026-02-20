@@ -13,6 +13,7 @@ interface BoardState {
   workers: Record<string, number>
   phases: Record<string, PhaseInfo>
   redesignTasks: Task[]
+  manualRedesignTaskIds: Set<string>
   selectedTask: Task | null
   isConnected: boolean
 
@@ -22,6 +23,8 @@ interface BoardState {
   moveTask: (taskId: string, from: string, to: string) => void
   updateTask: (task: Task) => void
   assignWorker: (taskId: string, workerId: string) => void
+  addManualRedesignTaskId: (taskId: string) => void
+  clearManualRedesignTaskIds: () => void
   getBoardStats: () => BoardStats
 }
 
@@ -31,18 +34,31 @@ export const useBoardStore = create<BoardState>((set, get) => ({
   workers: {},
   phases: {},
   redesignTasks: [],
+  manualRedesignTaskIds: new Set<string>(),
   selectedTask: null,
   isConnected: false,
 
   setBoard: (data) =>
-    set({
-      columns: Object.fromEntries(
-        Object.entries(data.columns).map(([key, col]) => [key, col.tasks])
-      ),
-      stats: data.stats,
-      workers: data.workers,
-      phases: data.phases || {},
-      redesignTasks: data.redesign_tasks || [],
+    set((state) => {
+      const redesignTasks = data.redesign_tasks || []
+      const redesignTaskIds = new Set(redesignTasks.map((t) => t.id))
+      // Prune manual IDs that are no longer in redesign (resolved or moved out)
+      const pruned = new Set<string>()
+      for (const id of state.manualRedesignTaskIds) {
+        if (redesignTaskIds.has(id)) {
+          pruned.add(id)
+        }
+      }
+      return {
+        columns: Object.fromEntries(
+          Object.entries(data.columns).map(([key, col]) => [key, col.tasks])
+        ),
+        stats: data.stats,
+        workers: data.workers,
+        phases: data.phases || {},
+        redesignTasks,
+        manualRedesignTaskIds: pruned,
+      }
     }),
 
   setSelectedTask: (task) => set({ selectedTask: task }),
@@ -83,6 +99,15 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       }
       return { columns }
     }),
+
+  addManualRedesignTaskId: (taskId) =>
+    set((state) => {
+      const updated = new Set(state.manualRedesignTaskIds)
+      updated.add(taskId)
+      return { manualRedesignTaskIds: updated }
+    }),
+
+  clearManualRedesignTaskIds: () => set({ manualRedesignTaskIds: new Set<string>() }),
 
   getBoardStats: () => {
     const { columns } = get()
