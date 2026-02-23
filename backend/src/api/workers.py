@@ -86,6 +86,16 @@ async def register_worker(
         existing_worker = existing_result.scalar_one_or_none()
         if existing_worker is None:
             raise HTTPException(status_code=404, detail="Worker not found for re-registration")
+
+        # Verify ownership: the caller must prove they own this worker.
+        # 1) If worker_token is provided and still valid in Redis, it must match.
+        # 2) If worker_token is expired/missing, the valid registration_token
+        #    (already verified above) serves as proof of ownership.
+        if body.worker_token:
+            resolved_id = await registry.resolve_token(body.worker_token)
+            if resolved_id is not None and resolved_id != worker_id:
+                raise HTTPException(status_code=403, detail="Worker token does not match worker_id")
+
         # Invalidate old Redis token before issuing a new one
         await registry.deregister(worker_id)
     else:
@@ -370,6 +380,7 @@ async def submit_result(
             "success": str(body.success).lower(),
             "output_path": body.output_path,
             "error_message": body.error_message,
+            "error_category": body.error_category,
             "commit_hash": body.commit_hash,
             "branch_name": body.branch_name,
         })
@@ -381,6 +392,8 @@ async def submit_result(
             "passed": str(body.passed).lower(),
             "feedback": body.feedback,
             "error_message": body.error_message,
+            "error_category": body.error_category,
+            "commit_hash": body.commit_hash,
         })
 
     # ACK the original message on the source stream

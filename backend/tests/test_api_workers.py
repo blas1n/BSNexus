@@ -220,10 +220,9 @@ async def test_re_register_with_valid_token(
 async def test_re_register_with_expired_token(
     api_client: AsyncClient, mock_redis: AsyncMock, valid_registration_token: str, db_session: AsyncSession
 ) -> None:
-    """Re-register with expired worker_token but valid registration_token should keep same ID."""
+    """Re-register with expired worker_token + valid registration_token should succeed."""
     existing_id = str(uuid.uuid4())
 
-    # Pre-insert worker in DB (required for re-registration validation)
     from datetime import datetime, timezone
 
     db_session.add(models.Worker(
@@ -233,7 +232,7 @@ async def test_re_register_with_expired_token(
     ))
     await db_session.commit()
 
-    # resolve_token returns None (token expired)
+    # resolve_token returns None (token expired) — registration_token serves as fallback proof
     mock_redis.get.return_value = None
 
     response = await api_client.post(
@@ -251,6 +250,68 @@ async def test_re_register_with_expired_token(
     assert data["worker_id"] == existing_id
 
 
+async def test_re_register_without_worker_token(
+    api_client: AsyncClient, mock_redis: AsyncMock, valid_registration_token: str, db_session: AsyncSession
+) -> None:
+    """Re-register with worker_id but no worker_token should succeed if registration_token is valid."""
+    existing_id = str(uuid.uuid4())
+
+    from datetime import datetime, timezone
+
+    db_session.add(models.Worker(
+        id=uuid.UUID(existing_id), name="w1", platform="linux",
+        executor_type="claude-code", status=models.WorkerStatus.idle,
+        registered_at=datetime.now(timezone.utc),
+    ))
+    await db_session.commit()
+
+    response = await api_client.post(
+        "/api/v1/workers/register",
+        json={
+            "platform": "linux",
+            "registration_token": valid_registration_token,
+            "worker_id": existing_id,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["worker_id"] == existing_id
+
+
+async def test_re_register_with_wrong_worker_token(
+    api_client: AsyncClient, mock_redis: AsyncMock, valid_registration_token: str, db_session: AsyncSession
+) -> None:
+    """Re-register with a worker_token that belongs to a different worker should return 403."""
+    existing_id = str(uuid.uuid4())
+    other_id = str(uuid.uuid4())
+
+    from datetime import datetime, timezone
+
+    db_session.add(models.Worker(
+        id=uuid.UUID(existing_id), name="w1", platform="linux",
+        executor_type="claude-code", status=models.WorkerStatus.idle,
+        registered_at=datetime.now(timezone.utc),
+    ))
+    await db_session.commit()
+
+    # resolve_token returns a different worker_id — token belongs to someone else
+    mock_redis.get.return_value = other_id
+
+    response = await api_client.post(
+        "/api/v1/workers/register",
+        json={
+            "platform": "linux",
+            "registration_token": valid_registration_token,
+            "worker_id": existing_id,
+            "worker_token": "stolen-token",
+        },
+    )
+
+    assert response.status_code == 403
+    assert "does not match" in response.json()["detail"]
+
+
 async def test_re_register_unknown_worker_returns_404(
     api_client: AsyncClient, mock_redis: AsyncMock, valid_registration_token: str
 ) -> None:
@@ -263,6 +324,7 @@ async def test_re_register_unknown_worker_returns_404(
             "platform": "linux",
             "registration_token": valid_registration_token,
             "worker_id": unknown_id,
+            "worker_token": "some-token",
         },
     )
 
@@ -463,6 +525,7 @@ async def test_re_register_updates_db_worker(
 
     # Create initial DB worker
     existing_id = uuid.uuid4()
+    existing_token = "b" * 64
     db_session.add(models.Worker(
         id=existing_id, name="old-name", platform="linux", capabilities=[],
         executor_type="claude-code", status=models.WorkerStatus.idle,
@@ -470,12 +533,16 @@ async def test_re_register_updates_db_worker(
     ))
     await db_session.commit()
 
+    # resolve_token returns the same worker_id (ownership verified)
+    mock_redis.get.return_value = str(existing_id)
+
     response = await api_client.post(
         "/api/v1/workers/register",
         json={
             "name": "new-name",
             "platform": "darwin",
             "worker_id": str(existing_id),
+            "worker_token": existing_token,
             "registration_token": valid_registration_token,
         },
     )
