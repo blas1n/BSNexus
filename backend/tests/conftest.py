@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import os
+
+os.environ.setdefault("TESTING", "1")
+
 from unittest.mock import AsyncMock, patch
 
 import pytest_asyncio

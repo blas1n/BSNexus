@@ -36,5 +36,9 @@ class Settings(BaseSettings):
     # Auto-redesign
     max_auto_redesigns: int = 2
 
+    # Logging
+    log_dir: str = "logs"
+    log_level: str = "INFO"
+
 
 settings = Settings()

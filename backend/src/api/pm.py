@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 
 from backend.src import models
@@ -12,6 +13,8 @@ from backend.src.storage.database import async_session, get_db
 from backend.src.utils.worker_registry import WorkerRegistry
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/pm", tags=["pm"])
 
@@ -65,11 +68,21 @@ async def start_orchestration(
 
     task = asyncio.create_task(orchestrator.start(project_id, async_session))
 
-    orchestrators[pid] = {
+    entry = {
         "orchestrator": orchestrator,
         "task": task,
         "running": True,
     }
+    orchestrators[pid] = entry
+
+    def _on_orchestrator_done(fut: asyncio.Task[None]) -> None:
+        entry["running"] = False
+        if fut.cancelled():
+            logger.warning("Orchestrator task cancelled for project %s", pid)
+        elif fut.exception() is not None:
+            logger.error("Orchestrator task crashed for project %s: %s", pid, fut.exception(), exc_info=fut.exception())
+
+    task.add_done_callback(_on_orchestrator_done)
 
     return {"detail": "Orchestration started", "project_id": pid}
 
