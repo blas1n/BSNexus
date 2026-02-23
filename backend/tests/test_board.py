@@ -314,8 +314,9 @@ async def test_board_event_generator_yields_matching_events():
 
     # Only the matching event should be yielded
     assert len(events) == 1
-    assert events[0]["event"] == "task_transition"
+    assert "event" not in events[0]  # no named SSE event key — sent as unnamed message
     data = json.loads(events[0]["data"])
+    assert data["event"] == "task_transition"
     assert data["task_id"] == "t1"
     assert data["project_id"] == project_id
 

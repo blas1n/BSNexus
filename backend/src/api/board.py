@@ -150,7 +150,6 @@ async def _board_event_generator(
                         event_project_id = data.get("project_id", "")
                         if event_project_id == project_id:
                             yield {
-                                "event": data.get("event", "update"),
                                 "data": json.dumps(data),
                             }
         except asyncio.CancelledError:
