@@ -86,6 +86,7 @@ class TestLLMClientChat:
             api_base=None,
             temperature=0.7,
             max_tokens=4096,
+            timeout=120,
         )
 
     async def test_chat_custom_params(self, client: LLMClient) -> None:
@@ -173,6 +174,7 @@ class TestLLMClientStreamChat:
             temperature=0.7,
             max_tokens=4096,
             stream=True,
+            timeout=120,
         )
 
     async def test_stream_chat_skips_none_content(self, client: LLMClient) -> None:

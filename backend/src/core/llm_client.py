@@ -18,6 +18,7 @@ _JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*\n(.*?)\n```", re.DOTALL)
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 1.0  # seconds
 RETRY_MAX_DELAY = 10.0  # seconds
+REQUEST_TIMEOUT = 120  # seconds — per acompletion call (connect + read)
 
 _RETRYABLE_STRINGS = ("overloaded", "rate_limit", "timeout", "429", "503", "529")
 
@@ -89,6 +90,7 @@ class LLMClient:
                     api_base=self.config.base_url,
                     temperature=temperature,
                     max_tokens=max_tokens,
+                    timeout=REQUEST_TIMEOUT,
                 ))
                 choice = cast(Choices, response.choices[0])
                 content = choice.message.content
@@ -134,6 +136,7 @@ class LLMClient:
                     temperature=temperature,
                     max_tokens=max_tokens,
                     stream=True,
+                    timeout=REQUEST_TIMEOUT,
                 ))
                 async for chunk in stream:
                     content = chunk.choices[0].delta.content
@@ -196,6 +199,7 @@ class LLMClient:
                     max_tokens=max_tokens,
                     response_format=response_format,
                     stream=True,
+                    timeout=REQUEST_TIMEOUT,
                 ))
                 raw = ""
                 async for chunk in stream:
