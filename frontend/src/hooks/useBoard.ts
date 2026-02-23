@@ -16,6 +16,7 @@ export function useBoard(projectId: string) {
     queryKey: ['board', projectId],
     queryFn: () => boardApi.get(projectId),
     enabled: !!projectId,
+    refetchInterval: 10_000,
   })
 
   const refetchRef = useRef(query.refetch)

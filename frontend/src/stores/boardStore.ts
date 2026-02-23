@@ -67,17 +67,33 @@ export const useBoardStore = create<BoardState>((set, get) => ({
   moveTask: (taskId, from, to) =>
     set((state) => {
       const columns = { ...state.columns }
-      const fromTasks = [...(columns[from] || [])]
-      const taskIndex = fromTasks.findIndex((t) => t.id === taskId)
-      if (taskIndex === -1) return state
+      let redesignTasks = state.redesignTasks
+      let task: Task | undefined
 
-      const [task] = fromTasks.splice(taskIndex, 1)
+      // Source: redesignTasks or columns
+      if (from === 'redesign') {
+        const idx = redesignTasks.findIndex((t) => t.id === taskId)
+        if (idx === -1) return state
+        redesignTasks = [...redesignTasks]
+        task = redesignTasks.splice(idx, 1)[0]
+      } else {
+        const fromTasks = [...(columns[from] || [])]
+        const idx = fromTasks.findIndex((t) => t.id === taskId)
+        if (idx === -1) return state
+        task = fromTasks.splice(idx, 1)[0]
+        columns[from] = fromTasks
+      }
+
       const movedTask = { ...task, status: to as TaskStatus }
-      const toTasks = [...(columns[to] || []), movedTask]
 
-      columns[from] = fromTasks
-      columns[to] = toTasks
-      return { columns }
+      // Destination: redesignTasks or columns
+      if (to === 'redesign') {
+        redesignTasks = [...redesignTasks, movedTask]
+      } else {
+        columns[to] = [...(columns[to] || []), movedTask]
+      }
+
+      return { columns, redesignTasks }
     }),
 
   updateTask: (updated) =>
@@ -86,7 +102,8 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       for (const key of Object.keys(columns)) {
         columns[key] = columns[key].map((t) => (t.id === updated.id ? updated : t))
       }
-      return { columns, selectedTask: state.selectedTask?.id === updated.id ? updated : state.selectedTask }
+      const redesignTasks = state.redesignTasks.map((t) => (t.id === updated.id ? updated : t))
+      return { columns, redesignTasks, selectedTask: state.selectedTask?.id === updated.id ? updated : state.selectedTask }
     }),
 
   assignWorker: (taskId, workerId) =>

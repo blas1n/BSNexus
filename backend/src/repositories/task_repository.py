@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from typing import Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import selectinload
 
 from backend.src.models import Task, TaskPriority, TaskStatus, task_dependencies
@@ -169,4 +169,40 @@ class TaskRepository(BaseRepository):
             select(Task).where(Task.phase_id == phase_id, Task.status == TaskStatus.waiting)
         )
         return list(result.scalars().all())
+
+    async def list_incomplete_in_phase(self, phase_id: uuid.UUID) -> list[Task]:
+        """Get all incomplete (non-done) tasks within a phase."""
+        result = await self.db.execute(
+            select(Task)
+            .where(Task.phase_id == phase_id, Task.status != TaskStatus.done)
+            .options(selectinload(Task.depends_on))
+        )
+        return list(result.scalars().all())
+
+    async def list_done_in_phase(self, phase_id: uuid.UUID) -> list[Task]:
+        """Get all done tasks within a phase."""
+        result = await self.db.execute(
+            select(Task).where(Task.phase_id == phase_id, Task.status == TaskStatus.done)
+        )
+        return list(result.scalars().all())
+
+    async def hard_delete(self, task_id: uuid.UUID) -> None:
+        """Permanently delete a task and its dependencies/history (CASCADE)."""
+        await self.db.execute(delete(Task).where(Task.id == task_id))
+
+    async def hard_delete_many(self, task_ids: list[uuid.UUID]) -> int:
+        """Permanently delete multiple tasks. Returns count deleted."""
+        if not task_ids:
+            return 0
+        result = await self.db.execute(delete(Task).where(Task.id.in_(task_ids)))
+        return result.rowcount or 0
+
+    async def clear_dependencies(self, task_id: uuid.UUID) -> None:
+        """Remove all dependency relationships for a task (both directions)."""
+        await self.db.execute(
+            task_dependencies.delete().where(task_dependencies.c.task_id == task_id)
+        )
+        await self.db.execute(
+            task_dependencies.delete().where(task_dependencies.c.dependency_id == task_id)
+        )
 

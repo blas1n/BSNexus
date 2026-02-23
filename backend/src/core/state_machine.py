@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from backend.src.core.prompt_security import PromptSigner
@@ -23,11 +26,11 @@ class TaskStateMachine:
     TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
         TaskStatus.waiting: {TaskStatus.ready},
         TaskStatus.ready: {TaskStatus.queued},
-        TaskStatus.queued: {TaskStatus.in_progress, TaskStatus.ready},
+        TaskStatus.queued: {TaskStatus.in_progress},
         TaskStatus.in_progress: {TaskStatus.review, TaskStatus.ready, TaskStatus.redesign},
         TaskStatus.review: {TaskStatus.done, TaskStatus.in_progress, TaskStatus.redesign},
         TaskStatus.done: set(),
-        TaskStatus.redesign: {TaskStatus.waiting, TaskStatus.done},
+        TaskStatus.redesign: {TaskStatus.waiting},
     }
 
     def __init__(
@@ -58,7 +61,10 @@ class TaskStateMachine:
 
         # 1. Validate transition
         if not self.can_transition(old_status, new_status):
+            logger.error("Invalid transition: %s -> %s for task %s", old_status.value, new_status.value, task.id)
             raise ValueError(f"Invalid transition: {old_status.value} -> {new_status.value}")
+
+        logger.info("Task %s: %s -> %s (actor=%s, reason=%s)", task.id, old_status.value, new_status.value, actor, reason)
 
         # 2. Record history (requires db_session)
         if db_session is not None:

@@ -106,75 +106,47 @@ add_task: |
     "qa_prompt": "Review checklist for the code reviewer..."
   }}
 
-redesign: |
-  A task has repeatedly failed execution or QA review and needs your intervention.
-  Analyze the failure history and decide the best course of action.
+phase_redesign: |
+  A task in the current phase has repeatedly failed execution or QA review.
+  You must redesign the **entire set of incomplete tasks** in this phase to resolve the issue.
 
-  ## Failed Task
-  - **Title**: {title}
-  - **Description**: {description}
-  - **Priority**: {priority}
-  - **Retry Count**: {retry_count}/{max_retries}
+  ## Failed Task (trigger for redesign)
+  - **Title**: {failed_task_title}
+  - **Error**: {failed_task_error}
+  - **Failure History**: {failed_task_history}
+
+  ## Completed Tasks (reference only, do NOT modify)
+  {done_tasks}
+
+  ## Incomplete Tasks (you must redesign these)
+  {incomplete_tasks}
+
+  ## Phase Info
+  - **Phase Name**: {phase_name}
   - **Branch**: {branch_name}
 
-  ## Current Worker Prompt
-  {worker_prompt}
-
-  ## Current QA Prompt
-  {qa_prompt}
-
-  ## Failure History
-  {failure_history}
-
-  ## Final Error Message
-  {error_message}
-
-  ## Available Actions
-
-  1. **modify** - Rewrite the worker prompt and/or QA prompt to address the root cause
-     of failures. Use this when the task goal is correct but the instructions are unclear,
-     incomplete, or lead to errors.
-
-  2. **delete** - Remove this task entirely. Use this only when the task is no longer
-     needed, is a duplicate, or the requirement is not achievable.
-
-  3. **split** - Break this task into 2-4 smaller, more focused sub-tasks. Use this when
-     the original task is too large or complex and the failures indicate the worker cannot
-     handle it as a single unit.
-
   ## Instructions
-  - Carefully analyze the failure pattern across all retry attempts.
-  - Choose the action most likely to resolve the issue.
-  - For "modify": provide improved worker_prompt and qa_prompt that directly address the failures.
-  - For "split": create 2-4 sub-tasks that together accomplish the original goal.
-  - For "delete": only if the task is truly not achievable or not needed.
+  - Analyze why the failed task keeps failing across all retry attempts.
+  - Return a new list of tasks for this phase that resolves the issue.
+  - You may keep, modify, remove, or add tasks as needed.
+  - For kept/modified tasks, include the original task `id` so the system can match them.
+  - For new tasks, omit the `id` field.
+  - Tasks that are NOT in your output will be deleted from the project.
+  - Set `depends_on` to a list of task IDs (existing UUIDs) or titles (for new tasks) to define execution order.
+  - Each task must have a `worker_prompt` (instructions for the coding agent) and `qa_prompt` (review checklist).
 
   Return JSON in this exact format:
   {{
-    "action": "modify",
-    "reasoning": "Brief explanation of your decision",
-    "title": "Updated title or null to keep current",
-    "description": "Updated description or null to keep current",
-    "worker_prompt": "Revised detailed instructions for the coding agent",
-    "qa_prompt": "Revised review checklist for the code reviewer",
-    "split_tasks": []
-  }}
-
-  For split action, populate split_tasks instead:
-  {{
-    "action": "split",
-    "reasoning": "Brief explanation of your decision",
-    "title": null,
-    "description": null,
-    "worker_prompt": null,
-    "qa_prompt": null,
-    "split_tasks": [
+    "reasoning": "Brief explanation of the redesign decisions",
+    "tasks": [
       {{
-        "title": "Sub-task title",
-        "description": "Sub-task description",
+        "id": "existing-uuid-if-kept-or-modified",
+        "title": "Task title",
+        "description": "Task description",
         "priority": "high|medium|low|critical",
         "worker_prompt": "Detailed instructions for the coding agent",
-        "qa_prompt": "Review checklist for the code reviewer"
+        "qa_prompt": "Review checklist for the code reviewer",
+        "depends_on": []
       }}
     ]
   }}

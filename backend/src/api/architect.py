@@ -627,105 +627,238 @@ async def finalize_design(
         return schemas.ProjectResponse.model_validate(loaded_project)
 
 
-# ── 6. Redesign Task ────────────────────────────────────────────────
+# ── 6. Redesign Phase ──────────────────────────────────────────────
 
 
-@router.post("/redesign/{task_id}", response_model=schemas.TaskResponse)
-async def redesign_task(
-    task_id: uuid.UUID,
-    body: schemas.TaskRedesignRequest,
+@router.post("/redesign/phase/{phase_id}", response_model=schemas.PhaseRedesignResponse)
+async def redesign_phase(
+    phase_id: uuid.UUID,
+    body: schemas.PhaseRedesignRequest,
     db: AsyncSession = Depends(get_db),
-) -> schemas.TaskResponse:
-    """Redesign a task that has exceeded max retries."""
+) -> schemas.PhaseRedesignResponse:
+    """Trigger manual phase-level redesign via Architect LLM.
+
+    Used when auto-redesign has failed and user intervention is needed.
+    Sends all incomplete tasks to the Architect LLM for redesign.
+    """
+    from backend.src.core.llm_client import create_llm_client_from_project
     from backend.src.core.state_machine import TaskStateMachine
 
+    phase_repo = PhaseRepository(db)
+    phase = await phase_repo.get_by_id(phase_id)
+    if phase is None:
+        raise HTTPException(status_code=404, detail="Phase not found")
+
+    project_repo = ProjectRepository(db)
+    project = await project_repo.get_by_id(phase.project_id, load_phases=False)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # Check that there are redesign tasks in this phase
     task_repo = TaskRepository(db)
-    task = await task_repo.get_by_id(task_id)
-    if task is None:
-        raise HTTPException(status_code=404, detail="Task not found")
-    if task.status != models.TaskStatus.redesign:
-        raise HTTPException(status_code=400, detail="Task is not in redesign status")
+    incomplete_tasks = await task_repo.list_incomplete_in_phase(phase_id)
+    redesign_tasks = [t for t in incomplete_tasks if t.status == models.TaskStatus.redesign]
+    if not redesign_tasks:
+        raise HTTPException(status_code=400, detail="No tasks in redesign status in this phase")
 
+    # Build LLM client — prefer request body config, then project config
+    try:
+        if body.llm_config:
+            llm_config_dict: dict[str, Any] = {"api_key": body.llm_config.api_key}
+            if body.llm_config.model:
+                llm_config_dict["model"] = body.llm_config.model
+            if body.llm_config.base_url:
+                llm_config_dict["base_url"] = body.llm_config.base_url
+            config = _build_llm_config(llm_config_dict)
+            client = LLMClient(config)
+        else:
+            client = create_llm_client_from_project(project, role="architect")
+    except (ValueError, LLMError) as e:
+        raise HTTPException(status_code=400, detail=f"LLM configuration error: {e}") from e
+
+    # Build context
+    done_tasks = await task_repo.list_done_in_phase(phase_id)
+
+    def _task_to_dict(t: models.Task) -> dict[str, Any]:
+        wp = ""
+        if t.worker_prompt:
+            wp = t.worker_prompt.get("prompt", json.dumps(t.worker_prompt)) if isinstance(t.worker_prompt, dict) else str(t.worker_prompt)
+        qp = ""
+        if t.qa_prompt:
+            qp = t.qa_prompt.get("prompt", json.dumps(t.qa_prompt)) if isinstance(t.qa_prompt, dict) else str(t.qa_prompt)
+        dep_ids = [str(d.id) for d in t.depends_on] if t.depends_on else []
+        return {
+            "id": str(t.id), "title": t.title, "description": t.description or "",
+            "priority": t.priority.value, "status": t.status.value,
+            "worker_prompt": wp, "qa_prompt": qp, "depends_on": dep_ids,
+            "retry_count": t.retry_count, "error_message": t.error_message or "",
+        }
+
+    # Use the first redesign task as the "trigger" for context
+    trigger_task = redesign_tasks[0]
+    failure_history = json.dumps(trigger_task.qa_feedback_history or [], indent=2)
+
+    incomplete_dicts = [_task_to_dict(t) for t in incomplete_tasks]
+    done_dicts = [{"id": str(t.id), "title": t.title, "status": "done"} for t in done_tasks]
+
+    prompt = get_prompt("architect", "phase_redesign").format(
+        failed_task_title=trigger_task.title,
+        failed_task_error=trigger_task.error_message or "No error message",
+        failed_task_history=failure_history,
+        done_tasks=json.dumps(done_dicts, indent=2, ensure_ascii=False),
+        incomplete_tasks=json.dumps(incomplete_dicts, indent=2, ensure_ascii=False),
+        phase_name=phase.name,
+        branch_name=phase.branch_name or "N/A",
+    )
+
+    llm_messages = [
+        {"role": "system", "content": get_prompt("architect", "system")},
+        {"role": "user", "content": prompt},
+    ]
+
+    try:
+        result = await client.structured_output(
+            messages=llm_messages,
+            response_format={"type": "json_object"},
+        )
+    except LLMError as e:
+        raise HTTPException(status_code=502, detail=f"LLM error: {e}") from e
+
+    reasoning = result.get("reasoning", "")
+    new_task_list = result.get("tasks", [])
+    if not isinstance(new_task_list, list):
+        raise HTTPException(status_code=502, detail="LLM returned invalid tasks format")
+
+    # Apply phase redesign via diff
     state_machine = TaskStateMachine()
+    existing_by_id = {str(t.id): t for t in incomplete_tasks}
+    result_ids: set[str] = set()
+    new_tasks_data: list[dict[str, Any]] = []
 
-    if body.action == schemas.RedesignAction.modify:
-        # Update task fields
-        if body.title is not None:
-            task.title = body.title
-        if body.description is not None:
-            task.description = body.description
-        if body.worker_prompt is not None:
-            task.worker_prompt = {"prompt": body.worker_prompt}
-        if body.qa_prompt is not None:
-            task.qa_prompt = {"prompt": body.qa_prompt}
-        # Reset retry state
+    for item in new_task_list:
+        item_id = item.get("id", "")
+        if item_id and item_id in existing_by_id:
+            result_ids.add(item_id)
+        else:
+            new_tasks_data.append(item)
+
+    # Delete tasks not in the result
+    to_delete = [t for tid, t in existing_by_id.items() if tid not in result_ids]
+    tasks_deleted = 0
+    if to_delete:
+        delete_ids = [t.id for t in to_delete]
+        tasks_deleted = await task_repo.hard_delete_many(delete_ids)
+
+    # Update kept tasks
+    tasks_kept = 0
+    for item in new_task_list:
+        item_id = item.get("id", "")
+        if not item_id or item_id not in existing_by_id:
+            continue
+        task = existing_by_id[item_id]
+        if item.get("title"):
+            task.title = item["title"]
+        if item.get("description"):
+            task.description = item["description"]
+        if item.get("worker_prompt"):
+            task.worker_prompt = {"prompt": item["worker_prompt"]}
+        if item.get("qa_prompt"):
+            task.qa_prompt = {"prompt": item["qa_prompt"]}
+        if item.get("priority"):
+            try:
+                task.priority = models.TaskPriority(item["priority"])
+            except ValueError:
+                pass
         task.retry_count = 0
         task.qa_feedback_history = None
         task.error_message = None
         task.commit_hash = None
-        # Transition back to waiting
+        task.worker_id = None
+        task.reviewer_id = None
+        task.started_at = None
         await state_machine.transition(
             task=task,
             new_status=models.TaskStatus.waiting,
-            reason="Redesigned by Architect (modify)",
+            reason=f"Manual phase redesign: {reasoning}",
             actor="architect",
             db_session=db,
         )
+        tasks_kept += 1
 
-    elif body.action == schemas.RedesignAction.delete:
-        # Mark as done (effectively removes it from the pipeline)
-        await state_machine.transition(
-            task=task,
-            new_status=models.TaskStatus.done,
-            reason="Removed by Architect (delete)",
-            actor="architect",
-            db_session=db,
+    # Create new tasks
+    tasks_created = 0
+    created_tasks: dict[str, models.Task] = {}
+    for item in new_tasks_data:
+        priority_str = item.get("priority", "medium")
+        try:
+            priority = models.TaskPriority(priority_str)
+        except ValueError:
+            priority = models.TaskPriority.medium
+
+        new_task = models.Task(
+            project_id=phase.project_id,
+            phase_id=phase.id,
+            title=item.get("title", "Untitled Task"),
+            description=item.get("description"),
+            priority=priority,
+            status=models.TaskStatus.waiting,
+            worker_prompt={"prompt": item.get("worker_prompt", "")},
+            qa_prompt={"prompt": item.get("qa_prompt", "")},
+            branch_name=phase.branch_name,
         )
+        db.add(new_task)
+        await db.flush()
+        created_tasks[new_task.title] = new_task
+        tasks_created += 1
 
-    elif body.action == schemas.RedesignAction.split:
-        if not body.split_tasks or len(body.split_tasks) == 0:
-            raise HTTPException(status_code=400, detail="split_tasks is required for split action")
+    # Wire up dependencies
+    all_tasks_by_id: dict[str, models.Task] = {}
+    all_tasks_by_title: dict[str, models.Task] = {}
+    for tid, t in existing_by_id.items():
+        if tid in result_ids:
+            all_tasks_by_id[tid] = t
+            all_tasks_by_title[t.title] = t
+    for title, t in created_tasks.items():
+        all_tasks_by_id[str(t.id)] = t
+        all_tasks_by_title[title] = t
 
-        # Mark original task as done
-        await state_machine.transition(
-            task=task,
-            new_status=models.TaskStatus.done,
-            reason="Split into sub-tasks by Architect",
-            actor="architect",
-            db_session=db,
-        )
+    for item in new_task_list:
+        item_id = item.get("id", "")
+        item_title = item.get("title", "")
+        task_obj = all_tasks_by_id.get(item_id) or all_tasks_by_title.get(item_title)
+        if not task_obj:
+            continue
+        depends_on_refs = item.get("depends_on", [])
+        if depends_on_refs:
+            await task_repo.clear_dependencies(task_obj.id)
+            dep_ids: list[uuid.UUID] = []
+            for ref in depends_on_refs:
+                dep = all_tasks_by_id.get(ref) or all_tasks_by_title.get(ref)
+                if dep:
+                    dep_ids.append(dep.id)
+            if dep_ids:
+                await task_repo.add_dependencies(task_obj.id, dep_ids)
 
-        # Create new tasks from split_tasks
-        for sub in body.split_tasks:
-            priority_str = sub.get("priority", "medium")
-            try:
-                priority = models.TaskPriority(priority_str)
-            except ValueError:
-                priority = models.TaskPriority.medium
-
-            new_task = models.Task(
-                project_id=task.project_id,
-                phase_id=task.phase_id,
-                title=sub.get("title", "Untitled Sub-Task"),
-                description=sub.get("description"),
-                priority=priority,
-                status=models.TaskStatus.waiting,
-                worker_prompt={"prompt": sub.get("worker_prompt", "")},
-                qa_prompt={"prompt": sub.get("qa_prompt", "")},
-                branch_name=task.branch_name,
-            )
-            db.add(new_task)
+    # Clear intervention flags for redesign tasks in this phase
+    for t in redesign_tasks:
+        intervention_key = f"task:{t.id}:needs_intervention"
+        try:
+            from backend.src.storage.redis_client import get_redis
+            redis = await get_redis()
+            await redis.delete(intervention_key)
+        except Exception:
+            pass  # Redis cleanup is best-effort
 
     await db.commit()
-    await db.refresh(task)
-    # Reload with depends_on
-    refreshed = await task_repo.get_by_id(task.id)
-    if refreshed is None:
-        raise HTTPException(status_code=500, detail="Task refresh failed")
 
-    from backend.src.api.board import _build_task_response
-
-    return _build_task_response(refreshed)
+    return schemas.PhaseRedesignResponse(
+        phase_id=phase_id,
+        project_id=phase.project_id,
+        reasoning=reasoning,
+        tasks_kept=tasks_kept,
+        tasks_deleted=tasks_deleted,
+        tasks_created=tasks_created,
+    )
 
 
 # ── 7. Add Task to Existing Project ─────────────────────────────────

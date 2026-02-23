@@ -2123,6 +2123,237 @@ class TestFindPotentialMarkerStart:
             assert text[result:] == marker[:i]
 
 
+# ── redesign_phase (direct call) ─────────────────────────────────────
+
+
+class TestRedesignPhaseDirect:
+    """Direct tests for redesign_phase endpoint function."""
+
+    async def _make_phase_with_tasks(self, db_session, *, redesign_count=1, done_count=0):
+        """Helper: create project + phase + tasks in redesign/done status."""
+        from backend.src.models import Task, TaskStatus, TaskPriority
+
+        project, phase = await create_project_with_phase(db_session)
+
+        redesign_tasks = []
+        for i in range(redesign_count):
+            t = Task(
+                id=uuid.uuid4(),
+                project_id=project.id,
+                phase_id=phase.id,
+                title=f"Redesign Task {i+1}",
+                description=f"Failed task {i+1}",
+                status=TaskStatus.redesign,
+                priority=TaskPriority.high,
+                worker_prompt={"prompt": f"Do thing {i+1}"},
+                qa_prompt={"prompt": f"Check thing {i+1}"},
+                error_message=f"Error in task {i+1}",
+                retry_count=3,
+                max_retries=3,
+                qa_feedback_history=[{"round": 1, "feedback": "bad"}],
+                branch_name=phase.branch_name,
+            )
+            db_session.add(t)
+            redesign_tasks.append(t)
+
+        done_tasks = []
+        for i in range(done_count):
+            t = Task(
+                id=uuid.uuid4(),
+                project_id=project.id,
+                phase_id=phase.id,
+                title=f"Done Task {i+1}",
+                description=f"Completed task {i+1}",
+                status=TaskStatus.done,
+                priority=TaskPriority.medium,
+                branch_name=phase.branch_name,
+            )
+            db_session.add(t)
+            done_tasks.append(t)
+
+        await db_session.commit()
+        return project, phase, redesign_tasks, done_tasks
+
+    async def test_redesign_phase_success(self, db_session):
+        """redesign_phase keeps, deletes, and creates tasks correctly."""
+        from backend.src import schemas
+        from backend.src.api.architect import redesign_phase
+
+        project, phase, redesign_tasks, _ = await self._make_phase_with_tasks(
+            db_session, redesign_count=2, done_count=1,
+        )
+        kept_task = redesign_tasks[0]
+        deleted_task = redesign_tasks[1]
+
+        llm_response = {
+            "reasoning": "Task 2 is obsolete, adding new task instead",
+            "tasks": [
+                {
+                    "id": str(kept_task.id),
+                    "title": "Updated Task 1",
+                    "description": "Modified description",
+                    "worker_prompt": "New worker prompt",
+                    "qa_prompt": "New qa prompt",
+                    "priority": "medium",
+                },
+                {
+                    "title": "Brand New Task",
+                    "description": "From scratch",
+                    "worker_prompt": "Build it",
+                    "qa_prompt": "Test it",
+                    "priority": "low",
+                },
+            ],
+        }
+
+        body = schemas.PhaseRedesignRequest()
+
+        with (
+            patch("backend.src.core.llm_client.create_llm_client_from_project") as mock_create,
+            patch("backend.src.storage.redis_client.get_redis", new_callable=AsyncMock) as mock_get_redis,
+        ):
+            mock_client = AsyncMock()
+            mock_client.structured_output = AsyncMock(return_value=llm_response)
+            mock_create.return_value = mock_client
+
+            mock_redis = AsyncMock()
+            mock_get_redis.return_value = mock_redis
+
+            result = await redesign_phase(phase_id=phase.id, body=body, db=db_session)
+
+        assert result.phase_id == phase.id
+        assert result.project_id == project.id
+        assert result.reasoning == "Task 2 is obsolete, adding new task instead"
+        assert result.tasks_kept == 1
+        assert result.tasks_deleted == 1
+        assert result.tasks_created == 1
+
+    async def test_redesign_phase_not_found(self, db_session):
+        """redesign_phase returns 404 for non-existent phase."""
+        from backend.src import schemas
+        from backend.src.api.architect import redesign_phase
+
+        body = schemas.PhaseRedesignRequest()
+        with pytest.raises(HTTPException) as exc_info:
+            await redesign_phase(phase_id=uuid.uuid4(), body=body, db=db_session)
+        assert exc_info.value.status_code == 404
+        assert "Phase not found" in exc_info.value.detail
+
+    async def test_redesign_phase_no_redesign_tasks(self, db_session):
+        """redesign_phase returns 400 when phase has no tasks in redesign status."""
+        from backend.src import schemas
+        from backend.src.api.architect import redesign_phase
+        from backend.src.models import Task, TaskStatus, TaskPriority
+
+        project, phase = await create_project_with_phase(db_session)
+        # Add a task in waiting status (not redesign)
+        t = Task(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            phase_id=phase.id,
+            title="Waiting Task",
+            status=TaskStatus.waiting,
+            priority=TaskPriority.medium,
+        )
+        db_session.add(t)
+        await db_session.commit()
+
+        body = schemas.PhaseRedesignRequest()
+        with pytest.raises(HTTPException) as exc_info:
+            await redesign_phase(phase_id=phase.id, body=body, db=db_session)
+        assert exc_info.value.status_code == 400
+        assert "No tasks in redesign status" in exc_info.value.detail
+
+    async def test_redesign_phase_llm_error(self, db_session):
+        """redesign_phase returns 502 on LLM failure."""
+        from backend.src import schemas
+        from backend.src.api.architect import redesign_phase
+        from backend.src.core.llm_client import LLMError
+
+        _, phase, _, _ = await self._make_phase_with_tasks(db_session)
+
+        body = schemas.PhaseRedesignRequest()
+        with patch("backend.src.core.llm_client.create_llm_client_from_project") as mock_create:
+            mock_client = AsyncMock()
+            mock_client.structured_output = AsyncMock(side_effect=LLMError("Rate limited"))
+            mock_create.return_value = mock_client
+
+            with pytest.raises(HTTPException) as exc_info:
+                await redesign_phase(phase_id=phase.id, body=body, db=db_session)
+            assert exc_info.value.status_code == 502
+            assert "LLM error" in exc_info.value.detail
+
+    async def test_redesign_phase_invalid_tasks_format(self, db_session):
+        """redesign_phase returns 502 when LLM returns non-list tasks."""
+        from backend.src import schemas
+        from backend.src.api.architect import redesign_phase
+
+        _, phase, _, _ = await self._make_phase_with_tasks(db_session)
+
+        llm_response = {"reasoning": "ok", "tasks": "not a list"}
+        body = schemas.PhaseRedesignRequest()
+        with patch("backend.src.core.llm_client.create_llm_client_from_project") as mock_create:
+            mock_client = AsyncMock()
+            mock_client.structured_output = AsyncMock(return_value=llm_response)
+            mock_create.return_value = mock_client
+
+            with pytest.raises(HTTPException) as exc_info:
+                await redesign_phase(phase_id=phase.id, body=body, db=db_session)
+            assert exc_info.value.status_code == 502
+            assert "invalid tasks format" in exc_info.value.detail
+
+    async def test_redesign_phase_with_llm_config_override(self, db_session):
+        """redesign_phase uses request body llm_config when provided."""
+        from backend.src import schemas
+        from backend.src.api.architect import redesign_phase
+
+        _, phase, _, _ = await self._make_phase_with_tasks(db_session)
+
+        llm_response = {"reasoning": "redesigned", "tasks": []}
+        body = schemas.PhaseRedesignRequest(
+            llm_config=schemas.LLMConfigInput(
+                api_key="sk-override",
+                model="gpt-4o",
+                base_url="https://override.api",
+            )
+        )
+
+        with (
+            patch("backend.src.api.architect.LLMClient") as MockLLMClient,
+            patch("backend.src.storage.redis_client.get_redis", new_callable=AsyncMock) as mock_get_redis,
+        ):
+            instance = MockLLMClient.return_value
+            instance.structured_output = AsyncMock(return_value=llm_response)
+            mock_get_redis.return_value = AsyncMock()
+
+            result = await redesign_phase(phase_id=phase.id, body=body, db=db_session)
+
+        assert result.tasks_deleted == 1  # the one redesign task was deleted
+        assert result.tasks_created == 0
+        # Verify LLMClient was called with override config
+        MockLLMClient.assert_called_once()
+        call_config = MockLLMClient.call_args[0][0]
+        assert call_config.api_key == "sk-override"
+
+    async def test_redesign_phase_project_not_found(self, db_session):
+        """redesign_phase returns 404 if project is missing (orphaned phase)."""
+        from backend.src import schemas
+        from backend.src.api.architect import redesign_phase
+
+        # Create phase without a valid project by patching project lookup
+        _, phase, _, _ = await self._make_phase_with_tasks(db_session)
+
+        body = schemas.PhaseRedesignRequest()
+        with patch("backend.src.api.architect.ProjectRepository") as MockProjRepo:
+            mock_repo = MockProjRepo.return_value
+            mock_repo.get_by_id = AsyncMock(return_value=None)
+            # Also need to keep PhaseRepository working
+            with pytest.raises(HTTPException) as exc_info:
+                await redesign_phase(phase_id=phase.id, body=body, db=db_session)
+            assert exc_info.value.status_code == 404
+            assert "Project not found" in exc_info.value.detail
+
+
 # ── _clean_response unit tests ───────────────────────────────────────
 
 

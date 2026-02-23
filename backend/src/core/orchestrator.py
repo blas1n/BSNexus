@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.src.config import settings
 from backend.src.core.llm_client import LLMError, create_llm_client_from_project
 from backend.src.core.state_machine import TaskStateMachine
-from backend.src.models import PhaseStatus, Task, TaskPriority, TaskStatus
+from backend.src.models import Phase, PhaseStatus, Task, TaskPriority, TaskStatus
 from backend.src.prompts.loader import get_prompt
 from backend.src.queue.streams import RedisStreamManager
 from backend.src.repositories.phase_repository import PhaseRepository
@@ -39,14 +39,24 @@ class PMOrchestrator:
 
     async def start(self, project_id: uuid.UUID, db_session_factory: Any) -> None:
         """Start orchestration for a project."""
+        logger.info("Orchestrator starting for project %s", project_id)
         self._running = True
         # Promote dependency-free waiting tasks before entering the main loops
         await self._promote_waiting_tasks(project_id, db_session_factory)
-        await asyncio.gather(
-            self._scheduling_loop(project_id, db_session_factory),
-            self._results_loop(project_id, db_session_factory),
-            self._escalation_loop(project_id, db_session_factory),
-        )
+        # Re-publish escalation messages for orphaned redesign tasks
+        await self._recover_orphaned_redesign_tasks(project_id, db_session_factory)
+        logger.info("Orchestrator entering main loops for project %s", project_id)
+        try:
+            await asyncio.gather(
+                self._scheduling_loop(project_id, db_session_factory),
+                self._results_loop(project_id, db_session_factory),
+                self._escalation_loop(project_id, db_session_factory),
+            )
+        except Exception:
+            logger.exception("Orchestrator main loops crashed for project %s", project_id)
+            raise
+        finally:
+            logger.info("Orchestrator stopped for project %s", project_id)
 
     async def _promote_waiting_tasks(self, project_id: uuid.UUID, db_session_factory: Any) -> None:
         """Promote WAITING tasks in the active phase whose dependencies are all met to READY."""
@@ -56,6 +66,36 @@ class PMOrchestrator:
                 await db.commit()
         except Exception:
             logger.exception("Promote waiting tasks error")
+
+    async def _recover_orphaned_redesign_tasks(self, project_id: uuid.UUID, db_session_factory: Any) -> None:
+        """Re-publish escalation messages for tasks stuck in redesign status.
+
+        When the server restarts, previously ACK'd escalation messages are lost.
+        This finds redesign tasks and re-publishes them so the escalation loop can process them.
+        Tasks flagged as needing intervention (task:{id}:needs_intervention in Redis) are skipped.
+        """
+        try:
+            async with db_session_factory() as db:
+                repo = TaskRepository(db)
+                redesign_tasks = await repo.list_by_project(project_id, status=TaskStatus.redesign)
+                for task in redesign_tasks:
+                    # Skip tasks that need manual intervention
+                    intervention_key = f"task:{task.id}:needs_intervention"
+                    needs_intervention = await self.stream_manager.redis.get(intervention_key)
+                    if needs_intervention:
+                        logger.debug("Skipping intervention-flagged redesign task %s", task.id)
+                        continue
+                    logger.info("Recovering orphaned redesign task %s: %s", task.id, task.title)
+                    await self.stream_manager.publish(RedisStreamManager.TASKS_ESCALATION, {
+                        "task_id": str(task.id),
+                        "project_id": str(task.project_id),
+                        "title": task.title,
+                        "retry_count": str(task.retry_count),
+                        "qa_feedback_history": json.dumps(task.qa_feedback_history or []),
+                        "error_message": task.error_message or "",
+                    })
+        except Exception:
+            logger.exception("Recover orphaned redesign tasks error")
 
     async def _promote_waiting_tasks_inner(self, project_id: uuid.UUID, db: AsyncSession) -> None:
         """Promote WAITING tasks in the active phase (uses existing db session)."""
@@ -88,6 +128,8 @@ class PMOrchestrator:
 
     async def _scheduling_loop(self, project_id: uuid.UUID, db_session_factory: Any) -> None:
         """Schedule READY tasks one at a time per project (sequential execution)."""
+        logger.info("Scheduling loop started for project %s", project_id)
+        redesign_check_counter = 0
         while self._running:
             try:
                 async with db_session_factory() as db:
@@ -127,6 +169,12 @@ class PMOrchestrator:
                             await self.stream_manager.publish_board_event(event_type, event_data)
             except Exception:
                 logger.exception("Scheduling loop error")
+
+            # Periodically re-publish orphaned redesign tasks (every 6 cycles = ~30s)
+            redesign_check_counter += 1
+            if redesign_check_counter >= 6:
+                redesign_check_counter = 0
+                await self._recover_orphaned_redesign_tasks(project_id, db_session_factory)
 
             await asyncio.sleep(5)
 
@@ -179,6 +227,7 @@ class PMOrchestrator:
 
     async def _results_loop(self, project_id: uuid.UUID, db_session_factory: Any) -> None:
         """Consume task results and process them."""
+        logger.info("Results loop started for project %s", project_id)
         while self._running:
             try:
                 messages = await self.stream_manager.consume(
@@ -242,11 +291,16 @@ class PMOrchestrator:
                 await self._assign_reviewer(task, db, worker_id)
             else:
                 error_msg = result.get("error_message", "")
-                await self._handle_execution_failure(task, db, worker_id, error_msg)
+                error_category = result.get("error_category", "")
+                await self._handle_execution_failure(task, db, worker_id, error_msg, error_category)
 
         elif result_type == "qa":
             passed = result.get("passed") in ("true", True)
             if passed:
+                # Store commit_hash from QA (committed after review pass)
+                qa_commit_hash = result.get("commit_hash", "")
+                if qa_commit_hash:
+                    task.commit_hash = qa_commit_hash
                 await self.state_machine.transition(
                     task=task,
                     new_status=TaskStatus.done,
@@ -257,14 +311,16 @@ class PMOrchestrator:
                 )
             else:
                 feedback = result.get("feedback", "")
-                await self._handle_qa_failure(task, db, worker_id, feedback)
+                error_msg = result.get("error_message", "")
+                error_category = result.get("error_category", "")
+                await self._handle_qa_failure(task, db, worker_id, feedback, error_msg, error_category)
 
             # Set reviewer back to idle
             if worker_id:
                 await self.registry.set_idle(worker_id)
 
     async def _handle_execution_failure(
-        self, task: Task, db: AsyncSession, worker_id: str, error_msg: str
+        self, task: Task, db: AsyncSession, worker_id: str, error_msg: str, error_category: str = ""
     ) -> None:
         """Handle execution failure with auto-retry or escalation to redesign."""
         task.retry_count += 1
@@ -275,6 +331,7 @@ class PMOrchestrator:
             "type": "execution_failure",
             "attempt": task.retry_count,
             "error": error_msg,
+            "error_category": error_category,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
 
@@ -302,17 +359,26 @@ class PMOrchestrator:
             await self.registry.set_idle(worker_id)
 
     async def _handle_qa_failure(
-        self, task: Task, db: AsyncSession, worker_id: str, feedback: str
+        self,
+        task: Task,
+        db: AsyncSession,
+        worker_id: str,
+        feedback: str,
+        error_message: str = "",
+        error_category: str = "",
     ) -> None:
         """Handle QA failure with auto-retry or escalation to redesign."""
         task.retry_count += 1
+        # Use error_message as feedback when QA failed due to exception (no review feedback)
+        effective_feedback = feedback or error_message
 
         if task.qa_feedback_history is None:
             task.qa_feedback_history = []
         task.qa_feedback_history.append({
             "type": "qa_failure",
             "attempt": task.retry_count,
-            "feedback": feedback,
+            "feedback": effective_feedback,
+            "error_category": error_category,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
 
@@ -320,7 +386,7 @@ class PMOrchestrator:
             await self.state_machine.transition(
                 task=task,
                 new_status=TaskStatus.redesign,
-                reason=f"Max retries ({task.max_retries}) exceeded. Last QA feedback: {feedback}",
+                reason=f"Max retries ({task.max_retries}) exceeded. Last QA feedback: {effective_feedback}",
                 actor="pm",
                 db_session=db,
                 stream_manager=self.stream_manager,
@@ -335,7 +401,7 @@ class PMOrchestrator:
                 stream_manager=self.stream_manager,
             )
             # Re-queue the task with QA feedback for the worker
-            await self._requeue_with_feedback(task, db, feedback)
+            await self._requeue_with_feedback(task, db, effective_feedback)
 
     async def _requeue_with_feedback(self, task: Task, db: AsyncSession, feedback: str) -> None:
         """Re-queue a task for execution with QA feedback included in the prompt."""
@@ -375,6 +441,7 @@ class PMOrchestrator:
 
     async def _escalation_loop(self, project_id: uuid.UUID, db_session_factory: Any) -> None:
         """Consume escalation messages and auto-redesign tasks via Architect LLM."""
+        logger.info("Escalation loop started for project %s", project_id)
         while self._running:
             try:
                 messages = await self.stream_manager.consume(
@@ -385,32 +452,37 @@ class PMOrchestrator:
                     block=5000,
                 )
                 for msg in messages:
+                    task_id = msg.get("task_id", "?")
+                    msg_id = msg.get("_message_id", "?")
                     try:
                         msg_project_id = msg.get("project_id", "")
                         if str(project_id) != str(msg_project_id):
+                            logger.debug("Escalation: skipping msg %s (project %s != %s)", msg_id, msg_project_id, project_id)
                             await self.stream_manager.acknowledge(
                                 RedisStreamManager.TASKS_ESCALATION,
                                 RedisStreamManager.GROUP_ARCHITECT,
-                                msg["_message_id"],
+                                msg_id,
                             )
                             continue
 
+                        logger.info("Escalation: processing task %s (msg %s)", task_id, msg_id)
                         async with db_session_factory() as db:
                             await self._process_escalation(msg, db)
                             await db.commit()
+                        logger.info("Escalation: completed task %s (msg %s)", task_id, msg_id)
                         await self.stream_manager.acknowledge(
                             RedisStreamManager.TASKS_ESCALATION,
                             RedisStreamManager.GROUP_ARCHITECT,
-                            msg["_message_id"],
+                            msg_id,
                         )
                     except Exception:
-                        logger.exception("Escalation processing error for message %s", msg.get("_message_id"))
+                        logger.exception("Escalation processing error for task %s (msg %s)", task_id, msg_id)
                         # ACK to prevent infinite retry on permanently failing messages
                         try:
                             await self.stream_manager.acknowledge(
                                 RedisStreamManager.TASKS_ESCALATION,
                                 RedisStreamManager.GROUP_ARCHITECT,
-                                msg["_message_id"],
+                                msg_id,
                             )
                         except Exception:
                             logger.exception("Failed to ACK escalation message after error")
@@ -419,8 +491,31 @@ class PMOrchestrator:
                     logger.exception("Escalation loop error")
                     await asyncio.sleep(5)
 
+    async def _mark_redesign_needs_intervention(self, task: Task, reason: str, db: AsyncSession) -> None:
+        """Keep task in redesign status and flag it as needing manual intervention.
+
+        Sets a Redis flag so periodic recovery skips this task.
+        Publishes auto_redesign_failed event so frontend can show user intervention UI.
+        """
+        task.error_message = f"Redesign failed: {reason}"
+        # Flag in Redis so recovery loop skips this task
+        intervention_key = f"task:{task.id}:needs_intervention"
+        await self.stream_manager.redis.set(intervention_key, "1")
+        # No TTL — flag cleared when user triggers manual redesign via API
+
+        await self.stream_manager.publish_board_event("auto_redesign_failed", {
+            "task_id": str(task.id),
+            "project_id": str(task.project_id),
+            "reason": reason,
+        })
+
     async def _process_escalation(self, msg: dict[str, Any], db: AsyncSession) -> None:
-        """Process a single escalation message: call LLM and apply redesign action."""
+        """Process a single escalation message: phase-level redesign via Architect LLM.
+
+        When a task enters redesign, the entire phase's incomplete tasks are sent to
+        the Architect LLM for redesign. The LLM returns a new task list which is
+        diff-applied against the existing incomplete tasks.
+        """
         task_id = msg.get("task_id", "")
         task_repo = TaskRepository(db)
         task = await task_repo.get_by_id(uuid.UUID(task_id) if isinstance(task_id, str) else task_id)
@@ -431,86 +526,96 @@ class PMOrchestrator:
             logger.info("Escalation: task %s not in redesign status (%s), skipping", task_id, task.status.value)
             return
 
-        # Detect deterministic environment errors that auto-redesign cannot fix
-        if self._is_environment_error(task.error_message):
-            logger.info("Escalation: task %s has environment error, skipping auto-redesign", task_id)
-            await self.stream_manager.publish_board_event("auto_redesign_failed", {
-                "task_id": str(task.id),
-                "project_id": str(task.project_id),
-                "reason": f"Environment error (not fixable by redesign): {task.error_message}",
-            })
+        # Detect deterministic environment errors that auto-redesign cannot fix.
+        last_category = ""
+        if task.qa_feedback_history:
+            last_entry = task.qa_feedback_history[-1]
+            last_category = last_entry.get("error_category", "") if isinstance(last_entry, dict) else ""
+        if last_category == "environment":
+            logger.info("Escalation: task %s has environment error, needs intervention", task_id)
+            await self._mark_redesign_needs_intervention(
+                task, f"Environment error (not fixable by redesign): {task.error_message}", db,
+            )
             return
 
-        # Check auto-redesign limit via Redis counter (ephemeral, per-redesign cycle)
-        redis_key = f"task:{task.id}:auto_redesign_count"
+        # Check auto-redesign limit via Redis counter (ephemeral, per-phase)
+        redis_key = f"phase:{task.phase_id}:auto_redesign_count"
         count_raw = await self.stream_manager.redis.get(redis_key)
         auto_redesign_count = int(count_raw) if count_raw else 0
 
         if auto_redesign_count >= settings.max_auto_redesigns:
             logger.info(
-                "Escalation: task %s reached max auto-redesigns (%d), leaving for manual intervention",
-                task_id, auto_redesign_count,
+                "Escalation: phase %s reached max auto-redesigns (%d), needs intervention",
+                task.phase_id, auto_redesign_count,
             )
-            await self.stream_manager.publish_board_event("auto_redesign_failed", {
-                "task_id": str(task.id),
-                "project_id": str(task.project_id),
-                "reason": f"Max auto-redesign attempts ({settings.max_auto_redesigns}) reached",
-            })
+            await self._mark_redesign_needs_intervention(
+                task, f"Auto-redesign limit ({settings.max_auto_redesigns}) reached", db,
+            )
             return
 
         # Load project for LLM config
         project_repo = ProjectRepository(db)
         project = await project_repo.get_by_id(task.project_id, load_phases=False)
         if not project:
-            logger.warning("Escalation: project %s not found for task %s", task.project_id, task_id)
-            await self.stream_manager.publish_board_event("auto_redesign_failed", {
-                "task_id": str(task.id),
-                "project_id": str(task.project_id),
-                "reason": "Project not found",
-            })
+            logger.warning("Escalation: project %s not found for task %s, needs intervention", task.project_id, task_id)
+            await self._mark_redesign_needs_intervention(task, "Project not found", db)
             return
 
         # Create LLM client
         try:
             llm_client = create_llm_client_from_project(project, role="architect")
         except ValueError as e:
-            logger.warning("Escalation: no LLM config for project %s: %s", project.id, e)
-            await self.stream_manager.publish_board_event("auto_redesign_failed", {
-                "task_id": str(task.id),
-                "project_id": str(task.project_id),
-                "reason": f"No architect LLM configuration: {e}",
-            })
+            logger.warning("Escalation: no LLM config for project %s: %s, needs intervention", project.id, e)
+            await self._mark_redesign_needs_intervention(task, f"No architect LLM configuration: {e}", db)
             return
 
+        # Load phase info
+        phase_repo = PhaseRepository(db)
+        phase = await phase_repo.get_by_id(task.phase_id)
+        if not phase:
+            logger.warning("Escalation: phase %s not found for task %s, needs intervention", task.phase_id, task_id)
+            await self._mark_redesign_needs_intervention(task, "Phase not found", db)
+            return
+
+        # Get all incomplete and done tasks in this phase
+        incomplete_tasks = await task_repo.list_incomplete_in_phase(task.phase_id)
+        done_tasks = await task_repo.list_done_in_phase(task.phase_id)
+
         # Build prompt context
-        worker_prompt_text = ""
-        if task.worker_prompt:
-            worker_prompt_text = (
-                task.worker_prompt.get("prompt", json.dumps(task.worker_prompt))
-                if isinstance(task.worker_prompt, dict)
-                else str(task.worker_prompt)
-            )
-        qa_prompt_text = ""
-        if task.qa_prompt:
-            qa_prompt_text = (
-                task.qa_prompt.get("prompt", json.dumps(task.qa_prompt))
-                if isinstance(task.qa_prompt, dict)
-                else str(task.qa_prompt)
-            )
+        def _task_to_dict(t: Task) -> dict[str, Any]:
+            wp = ""
+            if t.worker_prompt:
+                wp = t.worker_prompt.get("prompt", json.dumps(t.worker_prompt)) if isinstance(t.worker_prompt, dict) else str(t.worker_prompt)
+            qp = ""
+            if t.qa_prompt:
+                qp = t.qa_prompt.get("prompt", json.dumps(t.qa_prompt)) if isinstance(t.qa_prompt, dict) else str(t.qa_prompt)
+            dep_ids = [str(d.id) for d in t.depends_on] if t.depends_on else []
+            return {
+                "id": str(t.id),
+                "title": t.title,
+                "description": t.description or "",
+                "priority": t.priority.value,
+                "status": t.status.value,
+                "worker_prompt": wp,
+                "qa_prompt": qp,
+                "depends_on": dep_ids,
+                "retry_count": t.retry_count,
+                "error_message": t.error_message or "",
+            }
+
+        incomplete_dicts = [_task_to_dict(t) for t in incomplete_tasks]
+        done_dicts = [{"id": str(t.id), "title": t.title, "status": "done"} for t in done_tasks]
 
         failure_history = json.dumps(task.qa_feedback_history or [], indent=2)
 
-        prompt = get_prompt("architect", "redesign").format(
-            title=task.title,
-            description=task.description or "No description",
-            priority=task.priority.value,
-            retry_count=task.retry_count,
-            max_retries=task.max_retries,
-            branch_name=task.branch_name or "N/A",
-            worker_prompt=worker_prompt_text or "No worker prompt",
-            qa_prompt=qa_prompt_text or "No QA prompt",
-            failure_history=failure_history,
-            error_message=task.error_message or "No error message",
+        prompt = get_prompt("architect", "phase_redesign").format(
+            failed_task_title=task.title,
+            failed_task_error=task.error_message or "No error message",
+            failed_task_history=failure_history,
+            done_tasks=json.dumps(done_dicts, indent=2, ensure_ascii=False),
+            incomplete_tasks=json.dumps(incomplete_dicts, indent=2, ensure_ascii=False),
+            phase_name=phase.name,
+            branch_name=phase.branch_name or "N/A",
         )
 
         llm_messages = [
@@ -525,21 +630,34 @@ class PMOrchestrator:
                 response_format={"type": "json_object"},
             )
         except LLMError as e:
-            logger.error("Escalation: LLM call failed for task %s: %s", task_id, e)
-            await self.stream_manager.publish_board_event("auto_redesign_failed", {
-                "task_id": str(task.id),
-                "project_id": str(task.project_id),
-                "reason": f"LLM error: {e}",
-            })
+            logger.error("Escalation: LLM call failed for task %s: %s, needs intervention", task_id, e)
+            await self._mark_redesign_needs_intervention(task, f"LLM error: {e}", db)
             return
 
-        # Apply the action
-        action = result.get("action", "").lower()
+        # Apply phase redesign
         reasoning = result.get("reasoning", "")
+        new_task_list = result.get("tasks", [])
 
-        await self._apply_redesign_action(task, action, result, reasoning, db)
+        if not isinstance(new_task_list, list):
+            logger.error("Escalation: LLM returned invalid tasks format for phase %s", task.phase_id)
+            await self._mark_redesign_needs_intervention(task, "LLM returned invalid tasks format", db)
+            return
 
-        # Increment Redis counter with TTL (auto-expires after redesign cycle)
+        try:
+            await self._apply_phase_redesign(
+                phase=phase,
+                incomplete_tasks=incomplete_tasks,
+                new_task_list=new_task_list,
+                reasoning=reasoning,
+                task_repo=task_repo,
+                db=db,
+            )
+        except Exception as e:
+            logger.exception("Escalation: failed to apply phase redesign for phase %s", task.phase_id)
+            await self._mark_redesign_needs_intervention(task, f"Failed to apply redesign: {e}", db)
+            return
+
+        # Increment Redis counter with TTL
         await self.stream_manager.redis.incr(redis_key)
         await self.stream_manager.redis.expire(redis_key, 86400)  # 24h TTL
 
@@ -547,110 +665,142 @@ class PMOrchestrator:
         await self.stream_manager.publish_board_event("auto_redesign_applied", {
             "task_id": str(task.id),
             "project_id": str(task.project_id),
-            "action": action,
+            "phase_id": str(task.phase_id),
             "reasoning": reasoning,
         })
 
-        logger.info("Auto-redesign applied for task %s: action=%s, reasoning=%s", task_id, action, reasoning)
+        logger.info(
+            "Phase-level auto-redesign applied for phase %s (triggered by task %s): %s",
+            task.phase_id, task_id, reasoning,
+        )
 
-    async def _apply_redesign_action(
+    async def _apply_phase_redesign(
         self,
-        task: Task,
-        action: str,
-        result: dict[str, Any],
+        phase: Phase,
+        incomplete_tasks: list[Task],
+        new_task_list: list[dict[str, Any]],
         reasoning: str,
+        task_repo: TaskRepository,
         db: AsyncSession,
     ) -> None:
-        """Apply a redesign action decided by the Architect LLM."""
-        if action == "modify":
-            if result.get("title"):
-                task.title = result["title"]
-            if result.get("description"):
-                task.description = result["description"]
-            if result.get("worker_prompt"):
-                task.worker_prompt = {"prompt": result["worker_prompt"]}
-            if result.get("qa_prompt"):
-                task.qa_prompt = {"prompt": result["qa_prompt"]}
+        """Apply LLM redesign result by diffing against existing incomplete tasks.
+
+        1. Tasks with matching `id` in the result: update fields
+        2. Tasks NOT in the result: hard delete
+        3. Tasks without `id` in the result: create new
+        4. All surviving tasks: reset retry state, transition to waiting
+        """
+        existing_by_id: dict[str, Task] = {str(t.id): t for t in incomplete_tasks}
+        result_ids: set[str] = set()
+        new_tasks_data: list[dict[str, Any]] = []
+
+        # Separate kept vs new tasks
+        for item in new_task_list:
+            item_id = item.get("id", "")
+            if item_id and item_id in existing_by_id:
+                result_ids.add(item_id)
+            else:
+                new_tasks_data.append(item)
+
+        # 1. Delete tasks not in the result
+        to_delete = [t for tid, t in existing_by_id.items() if tid not in result_ids]
+        if to_delete:
+            delete_ids = [t.id for t in to_delete]
+            logger.info("Phase redesign: deleting %d tasks: %s", len(delete_ids), [str(i) for i in delete_ids])
+            await task_repo.hard_delete_many(delete_ids)
+
+        # 2. Update kept tasks
+        for item in new_task_list:
+            item_id = item.get("id", "")
+            if not item_id or item_id not in existing_by_id:
+                continue
+            task = existing_by_id[item_id]
+            if item.get("title"):
+                task.title = item["title"]
+            if item.get("description"):
+                task.description = item["description"]
+            if item.get("worker_prompt"):
+                task.worker_prompt = {"prompt": item["worker_prompt"]}
+            if item.get("qa_prompt"):
+                task.qa_prompt = {"prompt": item["qa_prompt"]}
+            if item.get("priority"):
+                try:
+                    task.priority = TaskPriority(item["priority"])
+                except ValueError:
+                    pass
             # Reset retry state
             task.retry_count = 0
             task.qa_feedback_history = None
             task.error_message = None
             task.commit_hash = None
+            task.worker_id = None
+            task.reviewer_id = None
+            task.started_at = None
+            # Transition to waiting
             await self.state_machine.transition(
                 task=task,
                 new_status=TaskStatus.waiting,
-                reason=f"Auto-redesigned by Architect (modify): {reasoning}",
+                reason=f"Phase redesign: {reasoning}",
                 actor="architect",
                 db_session=db,
                 stream_manager=self.stream_manager,
             )
 
-        elif action == "delete":
-            await self.state_machine.transition(
-                task=task,
-                new_status=TaskStatus.done,
-                reason=f"Removed by Auto-Architect (delete): {reasoning}",
-                actor="architect",
-                db_session=db,
-                stream_manager=self.stream_manager,
+        # 3. Create new tasks
+        # Build a title→id map for resolving depends_on references to new tasks
+        created_tasks: dict[str, Task] = {}
+        for item in new_tasks_data:
+            priority_str = item.get("priority", "medium")
+            try:
+                priority = TaskPriority(priority_str)
+            except ValueError:
+                priority = TaskPriority.medium
+
+            new_task = Task(
+                project_id=phase.project_id,
+                phase_id=phase.id,
+                title=item.get("title", "Untitled Task"),
+                description=item.get("description"),
+                priority=priority,
+                status=TaskStatus.waiting,
+                worker_prompt={"prompt": item.get("worker_prompt", "")},
+                qa_prompt={"prompt": item.get("qa_prompt", "")},
+                branch_name=phase.branch_name,
             )
+            db.add(new_task)
+            await db.flush()  # Get the ID
+            created_tasks[new_task.title] = new_task
 
-        elif action == "split":
-            split_tasks = result.get("split_tasks", [])
-            if not split_tasks:
-                logger.warning("Escalation: LLM returned split but no split_tasks for task %s", task.id)
-                return
+        # 4. Wire up dependencies for all tasks in the result
+        all_tasks_by_id: dict[str, Task] = {}
+        all_tasks_by_title: dict[str, Task] = {}
+        for tid, t in existing_by_id.items():
+            if tid in result_ids:
+                all_tasks_by_id[tid] = t
+                all_tasks_by_title[t.title] = t
+        for title, t in created_tasks.items():
+            all_tasks_by_id[str(t.id)] = t
+            all_tasks_by_title[title] = t
 
-            # Mark original as done
-            await self.state_machine.transition(
-                task=task,
-                new_status=TaskStatus.done,
-                reason=f"Split into {len(split_tasks)} sub-tasks by Auto-Architect: {reasoning}",
-                actor="architect",
-                db_session=db,
-                stream_manager=self.stream_manager,
-            )
+        for item in new_task_list:
+            item_id = item.get("id", "")
+            item_title = item.get("title", "")
+            task = all_tasks_by_id.get(item_id) or all_tasks_by_title.get(item_title)
+            if not task:
+                continue
 
-            # Create new sub-tasks
-            for sub in split_tasks:
-                priority_str = sub.get("priority", "medium")
-                try:
-                    priority = TaskPriority(priority_str)
-                except ValueError:
-                    priority = TaskPriority.medium
-
-                new_task = Task(
-                    project_id=task.project_id,
-                    phase_id=task.phase_id,
-                    title=sub.get("title", "Untitled Sub-Task"),
-                    description=sub.get("description"),
-                    priority=priority,
-                    status=TaskStatus.waiting,
-                    worker_prompt={"prompt": sub.get("worker_prompt", "")},
-                    qa_prompt={"prompt": sub.get("qa_prompt", "")},
-                    branch_name=task.branch_name,
-                )
-                db.add(new_task)
-        else:
-            logger.warning("Escalation: unknown action '%s' from LLM for task %s", action, task.id)
-
-    @staticmethod
-    def _is_environment_error(error_message: str | None) -> bool:
-        """Check if the error is a deterministic environment issue that redesign cannot fix."""
-        if not error_message:
-            return False
-        patterns = [
-            "WinError 2",           # File not found (e.g. CLI binary missing)
-            "WinError 3",           # Path not found
-            "FileNotFoundError",
-            "No such file or directory",
-            "PermissionError",
-            "EACCES",
-            "ENOENT",
-            "command not found",
-        ]
-        lower = error_message.lower()
-        return any(p.lower() in lower for p in patterns)
+            depends_on_refs = item.get("depends_on", [])
+            if depends_on_refs:
+                # Clear existing dependencies first
+                await task_repo.clear_dependencies(task.id)
+                dep_ids: list[uuid.UUID] = []
+                for ref in depends_on_refs:
+                    # ref can be a UUID string or a task title
+                    dep_task = all_tasks_by_id.get(ref) or all_tasks_by_title.get(ref)
+                    if dep_task:
+                        dep_ids.append(dep_task.id)
+                if dep_ids:
+                    await task_repo.add_dependencies(task.id, dep_ids)
 
     async def queue_next(self, project_id: uuid.UUID, db: AsyncSession) -> Task | None:
         """Manually queue the next ready task (respects sequential constraint)."""

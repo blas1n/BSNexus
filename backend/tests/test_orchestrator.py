@@ -60,6 +60,7 @@ def mock_stream() -> AsyncMock:
     manager.redis.get = AsyncMock(return_value=None)  # default: counter not set
     manager.redis.incr = AsyncMock(return_value=1)
     manager.redis.expire = AsyncMock()
+    manager.redis.set = AsyncMock()  # intervention flag
     return manager
 
 
@@ -634,20 +635,31 @@ def test_priority_order_values() -> None:
 # -- _process_escalation: auto-redesign ----------------------------------------
 
 
-async def test_process_escalation_modify(
+async def test_process_escalation_phase_redesign(
     orchestrator: PMOrchestrator, mock_db: AsyncMock, mock_state_machine: AsyncMock, mock_stream: AsyncMock
 ) -> None:
-    """LLM returning modify action should update task prompts and transition to waiting."""
+    """Phase-level redesign: LLM returns new task list, diff-applied to existing tasks."""
     project_id = uuid.uuid4()
+    phase_id = uuid.uuid4()
+
+    # Task that triggered redesign
     task = make_task(
         status=TaskStatus.redesign,
         project_id=project_id,
+        phase_id=phase_id,
         retry_count=3,
         max_retries=3,
         worker_prompt={"prompt": "old prompt"},
         qa_prompt={"prompt": "old qa"},
         error_message="Build failed",
         qa_feedback_history=[{"type": "execution_failure", "attempt": 3, "error": "Build failed"}],
+    )
+    # Another incomplete task in the same phase
+    other_task = make_task(
+        status=TaskStatus.waiting,
+        project_id=project_id,
+        phase_id=phase_id,
+        title="Other Task",
     )
 
     msg = {
@@ -660,32 +672,62 @@ async def test_process_escalation_modify(
     mock_project.id = project_id
     mock_project.llm_config = {"architect": {"api_key": "test-key", "model": "test-model"}}
 
+    mock_phase = MagicMock()
+    mock_phase.id = phase_id
+    mock_phase.project_id = project_id
+    mock_phase.name = "Phase 1"
+    mock_phase.branch_name = "phase/1"
+
+    # LLM returns: keep the trigger task (modified), delete the other task, add a new task
     llm_result = {
-        "action": "modify",
-        "reasoning": "Prompt was unclear",
-        "title": "Updated Title",
-        "description": "Updated desc",
-        "worker_prompt": "New improved prompt",
-        "qa_prompt": "New qa checklist",
-        "split_tasks": [],
+        "reasoning": "Simplified the approach",
+        "tasks": [
+            {
+                "id": str(task.id),
+                "title": "Updated Title",
+                "description": "Updated desc",
+                "worker_prompt": "New improved prompt",
+                "qa_prompt": "New qa checklist",
+                "priority": "high",
+                "depends_on": [],
+            },
+            {
+                "title": "Brand New Task",
+                "description": "Newly created",
+                "worker_prompt": "Do new thing",
+                "qa_prompt": "Check new thing",
+                "priority": "medium",
+                "depends_on": [],
+            },
+        ],
     }
+
+    mock_task_repo = AsyncMock()
+    mock_task_repo.get_by_id = AsyncMock(return_value=task)
+    mock_task_repo.list_incomplete_in_phase = AsyncMock(return_value=[task, other_task])
+    mock_task_repo.list_done_in_phase = AsyncMock(return_value=[])
+    mock_task_repo.hard_delete_many = AsyncMock(return_value=1)
+    mock_task_repo.clear_dependencies = AsyncMock()
+    mock_task_repo.add_dependencies = AsyncMock()
 
     with (
         patch("backend.src.core.orchestrator.TaskRepository") as MockTaskRepo,
         patch("backend.src.core.orchestrator.ProjectRepository") as MockProjectRepo,
+        patch("backend.src.core.orchestrator.PhaseRepository") as MockPhaseRepo,
         patch("backend.src.core.orchestrator.create_llm_client_from_project") as mock_create_llm,
         patch("backend.src.core.orchestrator.get_prompt") as mock_get_prompt,
     ):
-        MockTaskRepo.return_value = AsyncMock(get_by_id=AsyncMock(return_value=task))
+        MockTaskRepo.return_value = mock_task_repo
         MockProjectRepo.return_value = AsyncMock(get_by_id=AsyncMock(return_value=mock_project))
+        MockPhaseRepo.return_value = AsyncMock(get_by_id=AsyncMock(return_value=mock_phase))
         mock_llm_client = AsyncMock()
         mock_llm_client.structured_output = AsyncMock(return_value=llm_result)
         mock_create_llm.return_value = mock_llm_client
-        mock_get_prompt.return_value = "mocked prompt {title} {description} {priority} {retry_count} {max_retries} {branch_name} {worker_prompt} {qa_prompt} {failure_history} {error_message}"
+        mock_get_prompt.return_value = "mocked prompt {failed_task_title} {failed_task_error} {failed_task_history} {done_tasks} {incomplete_tasks} {phase_name} {branch_name}"
 
         await orchestrator._process_escalation(msg, mock_db)
 
-    # Verify task fields updated
+    # Verify kept task fields updated
     assert task.title == "Updated Title"
     assert task.description == "Updated desc"
     assert task.worker_prompt == {"prompt": "New improved prompt"}
@@ -694,135 +736,45 @@ async def test_process_escalation_modify(
     assert task.qa_feedback_history is None
     assert task.error_message is None
 
-    # Verify Redis counter incremented
-    mock_stream.redis.incr.assert_called_once_with(f"task:{task.id}:auto_redesign_count")
+    # Verify Redis counter incremented (phase-level)
+    mock_stream.redis.incr.assert_called_once_with(f"phase:{phase_id}:auto_redesign_count")
     mock_stream.redis.expire.assert_called_once()
 
-    # Verify transition to waiting
-    mock_state_machine.transition.assert_called_once()
-    call_kwargs = mock_state_machine.transition.call_args[1]
-    assert call_kwargs["new_status"] == TaskStatus.waiting
-    assert "Auto-redesigned" in call_kwargs["reason"]
+    # Verify transition to waiting was called for the kept task
+    mock_state_machine.transition.assert_called()
+
+    # Verify deleted task was hard-deleted
+    mock_task_repo.hard_delete_many.assert_called_once()
+    deleted_ids = mock_task_repo.hard_delete_many.call_args[0][0]
+    assert other_task.id in deleted_ids
+
+    # Verify new task was added to DB
+    mock_db.add.assert_called()
+    added = mock_db.add.call_args[0][0]
+    assert added.title == "Brand New Task"
+    assert added.project_id == project_id
+    assert added.phase_id == phase_id
 
     # Verify board event
     mock_stream.publish_board_event.assert_called()
     event_call = mock_stream.publish_board_event.call_args
     assert event_call[0][0] == "auto_redesign_applied"
-    assert event_call[0][1]["action"] == "modify"
-
-
-async def test_process_escalation_delete(
-    orchestrator: PMOrchestrator, mock_db: AsyncMock, mock_state_machine: AsyncMock, mock_stream: AsyncMock
-) -> None:
-    """LLM returning delete action should transition task to done."""
-    project_id = uuid.uuid4()
-    task = make_task(status=TaskStatus.redesign, project_id=project_id)
-
-    msg = {"task_id": str(task.id), "project_id": str(project_id), "_message_id": "esc-2"}
-
-    mock_project = MagicMock()
-    mock_project.id = project_id
-    mock_project.llm_config = {"architect": {"api_key": "test-key"}}
-
-    llm_result = {"action": "delete", "reasoning": "Task is obsolete", "split_tasks": []}
-
-    with (
-        patch("backend.src.core.orchestrator.TaskRepository") as MockTaskRepo,
-        patch("backend.src.core.orchestrator.ProjectRepository") as MockProjectRepo,
-        patch("backend.src.core.orchestrator.create_llm_client_from_project") as mock_create_llm,
-        patch("backend.src.core.orchestrator.get_prompt") as mock_get_prompt,
-    ):
-        MockTaskRepo.return_value = AsyncMock(get_by_id=AsyncMock(return_value=task))
-        MockProjectRepo.return_value = AsyncMock(get_by_id=AsyncMock(return_value=mock_project))
-        mock_llm_client = AsyncMock()
-        mock_llm_client.structured_output = AsyncMock(return_value=llm_result)
-        mock_create_llm.return_value = mock_llm_client
-        mock_get_prompt.return_value = "mocked {title} {description} {priority} {retry_count} {max_retries} {branch_name} {worker_prompt} {qa_prompt} {failure_history} {error_message}"
-
-        await orchestrator._process_escalation(msg, mock_db)
-
-    mock_state_machine.transition.assert_called_once()
-    call_kwargs = mock_state_machine.transition.call_args[1]
-    assert call_kwargs["new_status"] == TaskStatus.done
-    assert "delete" in call_kwargs["reason"].lower()
-
-    # Verify Redis counter incremented
-    mock_stream.redis.incr.assert_called_once_with(f"task:{task.id}:auto_redesign_count")
-
-
-async def test_process_escalation_split(
-    orchestrator: PMOrchestrator, mock_db: AsyncMock, mock_state_machine: AsyncMock, mock_stream: AsyncMock
-) -> None:
-    """LLM returning split action should mark original done and create sub-tasks."""
-    project_id = uuid.uuid4()
-    phase_id = uuid.uuid4()
-    task = make_task(
-        status=TaskStatus.redesign,
-        project_id=project_id,
-        phase_id=phase_id,
-        branch_name="feat/test",
-    )
-
-    msg = {"task_id": str(task.id), "project_id": str(project_id), "_message_id": "esc-3"}
-
-    mock_project = MagicMock()
-    mock_project.id = project_id
-    mock_project.llm_config = {"architect": {"api_key": "test-key"}}
-
-    llm_result = {
-        "action": "split",
-        "reasoning": "Task too large",
-        "split_tasks": [
-            {"title": "Sub-task 1", "description": "First part", "priority": "high", "worker_prompt": "Do A", "qa_prompt": "Check A"},
-            {"title": "Sub-task 2", "description": "Second part", "priority": "medium", "worker_prompt": "Do B", "qa_prompt": "Check B"},
-        ],
-    }
-
-    with (
-        patch("backend.src.core.orchestrator.TaskRepository") as MockTaskRepo,
-        patch("backend.src.core.orchestrator.ProjectRepository") as MockProjectRepo,
-        patch("backend.src.core.orchestrator.create_llm_client_from_project") as mock_create_llm,
-        patch("backend.src.core.orchestrator.get_prompt") as mock_get_prompt,
-    ):
-        MockTaskRepo.return_value = AsyncMock(get_by_id=AsyncMock(return_value=task))
-        MockProjectRepo.return_value = AsyncMock(get_by_id=AsyncMock(return_value=mock_project))
-        mock_llm_client = AsyncMock()
-        mock_llm_client.structured_output = AsyncMock(return_value=llm_result)
-        mock_create_llm.return_value = mock_llm_client
-        mock_get_prompt.return_value = "mocked {title} {description} {priority} {retry_count} {max_retries} {branch_name} {worker_prompt} {qa_prompt} {failure_history} {error_message}"
-
-        await orchestrator._process_escalation(msg, mock_db)
-
-    # Original task should be transitioned to done
-    mock_state_machine.transition.assert_called_once()
-    call_kwargs = mock_state_machine.transition.call_args[1]
-    assert call_kwargs["new_status"] == TaskStatus.done
-    assert "Split into 2 sub-tasks" in call_kwargs["reason"]
-
-    # Two new tasks should be added to db
-    assert mock_db.add.call_count == 2
-    added_tasks = [call[0][0] for call in mock_db.add.call_args_list]
-    assert added_tasks[0].title == "Sub-task 1"
-    assert added_tasks[0].project_id == project_id
-    assert added_tasks[0].phase_id == phase_id
-    assert added_tasks[0].branch_name == "feat/test"
-    assert added_tasks[1].title == "Sub-task 2"
-
-    # Verify Redis counter incremented
-    mock_stream.redis.incr.assert_called_once_with(f"task:{task.id}:auto_redesign_count")
+    assert event_call[0][1]["phase_id"] == str(phase_id)
 
 
 async def test_process_escalation_max_auto_redesigns(
     orchestrator: PMOrchestrator, mock_db: AsyncMock, mock_state_machine: AsyncMock, mock_stream: AsyncMock
 ) -> None:
-    """When Redis auto_redesign_count >= max, should skip LLM and publish failure event."""
+    """When Redis auto_redesign_count >= max, should stay in redesign and flag for intervention."""
     project_id = uuid.uuid4()
-    task = make_task(status=TaskStatus.redesign, project_id=project_id)
+    phase_id = uuid.uuid4()
+    task = make_task(status=TaskStatus.redesign, project_id=project_id, phase_id=phase_id)
 
     msg = {"task_id": str(task.id), "project_id": str(project_id), "_message_id": "esc-4"}
 
     # Set Redis counter to max
     mock_stream.redis.get = AsyncMock(return_value=b"2")
+    mock_stream.redis.set = AsyncMock()
 
     with (
         patch("backend.src.core.orchestrator.TaskRepository") as MockTaskRepo,
@@ -833,24 +785,28 @@ async def test_process_escalation_max_auto_redesigns(
 
         await orchestrator._process_escalation(msg, mock_db)
 
-    # No LLM call, no transition
+    # No state transition — task stays in redesign
     mock_state_machine.transition.assert_not_called()
+
+    # Should set intervention flag in Redis
+    mock_stream.redis.set.assert_called_once_with(f"task:{task.id}:needs_intervention", "1")
 
     # Should publish failure event
     mock_stream.publish_board_event.assert_called_once()
     event_call = mock_stream.publish_board_event.call_args
     assert event_call[0][0] == "auto_redesign_failed"
-    assert "Max auto-redesign attempts" in event_call[0][1]["reason"]
+    assert "Auto-redesign limit" in event_call[0][1]["reason"]
 
 
 async def test_process_escalation_llm_error(
     orchestrator: PMOrchestrator, mock_db: AsyncMock, mock_state_machine: AsyncMock, mock_stream: AsyncMock
 ) -> None:
-    """When LLM call fails, should publish failure event and leave task in redesign."""
+    """When LLM call fails, should stay in redesign and flag for intervention."""
     from backend.src.core.llm_client import LLMError
 
     project_id = uuid.uuid4()
-    task = make_task(status=TaskStatus.redesign, project_id=project_id)
+    phase_id = uuid.uuid4()
+    task = make_task(status=TaskStatus.redesign, project_id=project_id, phase_id=phase_id)
 
     msg = {"task_id": str(task.id), "project_id": str(project_id), "_message_id": "esc-5"}
 
@@ -858,23 +814,40 @@ async def test_process_escalation_llm_error(
     mock_project.id = project_id
     mock_project.llm_config = {"architect": {"api_key": "test-key"}}
 
+    mock_phase = MagicMock()
+    mock_phase.id = phase_id
+    mock_phase.name = "Phase 1"
+    mock_phase.branch_name = "phase/1"
+
+    mock_stream.redis.set = AsyncMock()
+
+    mock_task_repo = AsyncMock()
+    mock_task_repo.get_by_id = AsyncMock(return_value=task)
+    mock_task_repo.list_incomplete_in_phase = AsyncMock(return_value=[task])
+    mock_task_repo.list_done_in_phase = AsyncMock(return_value=[])
+
     with (
         patch("backend.src.core.orchestrator.TaskRepository") as MockTaskRepo,
         patch("backend.src.core.orchestrator.ProjectRepository") as MockProjectRepo,
+        patch("backend.src.core.orchestrator.PhaseRepository") as MockPhaseRepo,
         patch("backend.src.core.orchestrator.create_llm_client_from_project") as mock_create_llm,
         patch("backend.src.core.orchestrator.get_prompt") as mock_get_prompt,
     ):
-        MockTaskRepo.return_value = AsyncMock(get_by_id=AsyncMock(return_value=task))
+        MockTaskRepo.return_value = mock_task_repo
         MockProjectRepo.return_value = AsyncMock(get_by_id=AsyncMock(return_value=mock_project))
+        MockPhaseRepo.return_value = AsyncMock(get_by_id=AsyncMock(return_value=mock_phase))
         mock_llm_client = AsyncMock()
         mock_llm_client.structured_output = AsyncMock(side_effect=LLMError("API timeout"))
         mock_create_llm.return_value = mock_llm_client
-        mock_get_prompt.return_value = "mocked {title} {description} {priority} {retry_count} {max_retries} {branch_name} {worker_prompt} {qa_prompt} {failure_history} {error_message}"
+        mock_get_prompt.return_value = "mocked {failed_task_title} {failed_task_error} {failed_task_history} {done_tasks} {incomplete_tasks} {phase_name} {branch_name}"
 
         await orchestrator._process_escalation(msg, mock_db)
 
-    # No state transition
+    # No state transition — task stays in redesign
     mock_state_machine.transition.assert_not_called()
+
+    # Should set intervention flag in Redis
+    mock_stream.redis.set.assert_called_once_with(f"task:{task.id}:needs_intervention", "1")
 
     # Should publish failure event
     mock_stream.publish_board_event.assert_called_once()
@@ -918,49 +891,57 @@ async def test_process_escalation_task_not_found(
     mock_state_machine.transition.assert_not_called()
 
 
-async def test_redesign_prompt_formats_correctly() -> None:
-    """The redesign prompt template should format with all placeholders."""
+async def test_phase_redesign_prompt_formats_correctly() -> None:
+    """The phase_redesign prompt template should format with all placeholders."""
     from backend.src.prompts.loader import get_prompt
 
-    prompt_template = get_prompt("architect", "redesign")
+    prompt_template = get_prompt("architect", "phase_redesign")
     formatted = prompt_template.format(
-        title="Test Task",
-        description="A test task",
-        priority="high",
-        retry_count=3,
-        max_retries=3,
+        failed_task_title="Test Task",
+        failed_task_error="Build failed",
+        failed_task_history="[]",
+        done_tasks="[]",
+        incomplete_tasks='[{"id": "abc", "title": "Test Task"}]',
+        phase_name="Phase 1",
         branch_name="feat/test",
-        worker_prompt="Do the thing",
-        qa_prompt="Check the thing",
-        failure_history="[]",
-        error_message="Build failed",
     )
     assert "Test Task" in formatted
     assert "Build failed" in formatted
-    assert "Do the thing" in formatted
+    assert "Phase 1" in formatted
     # Ensure literal braces are rendered (not template syntax)
-    assert '"action"' in formatted
+    assert '"reasoning"' in formatted
 
 
-async def test_process_escalation_environment_error_skips_llm(
+async def test_process_escalation_environment_error_needs_intervention(
     orchestrator: PMOrchestrator, mock_db: AsyncMock, mock_state_machine: AsyncMock, mock_stream: AsyncMock
 ) -> None:
-    """Deterministic environment errors should skip auto-redesign and publish failure immediately."""
+    """Environment error_category should stay in redesign and flag for intervention."""
     project_id = uuid.uuid4()
     task = make_task(
         status=TaskStatus.redesign,
         project_id=project_id,
         error_message="[WinError 2] 지정된 파일을 찾을 수 없습니다",
+        qa_feedback_history=[{
+            "type": "execution_failure",
+            "attempt": 3,
+            "error": "[WinError 2] 지정된 파일을 찾을 수 없습니다",
+            "error_category": "environment",
+            "timestamp": "2026-01-01T00:00:00Z",
+        }],
     )
 
     msg = {"task_id": str(task.id), "project_id": str(project_id), "_message_id": "esc-env"}
+
+    mock_stream.redis.set = AsyncMock()
 
     with patch("backend.src.core.orchestrator.TaskRepository") as MockTaskRepo:
         MockTaskRepo.return_value = AsyncMock(get_by_id=AsyncMock(return_value=task))
         await orchestrator._process_escalation(msg, mock_db)
 
-    # No LLM call, no transition
+    # No state transition — task stays in redesign
     mock_state_machine.transition.assert_not_called()
+    # Should set intervention flag
+    mock_stream.redis.set.assert_called_once_with(f"task:{task.id}:needs_intervention", "1")
     # Redis counter should not be touched
     mock_stream.redis.incr.assert_not_called()
     # Should publish failure event with environment error reason
@@ -970,14 +951,479 @@ async def test_process_escalation_environment_error_skips_llm(
     assert "Environment error" in event_call[0][1]["reason"]
 
 
-def test_is_environment_error() -> None:
-    """_is_environment_error should detect known deterministic error patterns."""
-    assert PMOrchestrator._is_environment_error("[WinError 2] File not found") is True
-    assert PMOrchestrator._is_environment_error("FileNotFoundError: No such file") is True
-    assert PMOrchestrator._is_environment_error("ENOENT: no such file or directory") is True
-    assert PMOrchestrator._is_environment_error("PermissionError: access denied") is True
-    assert PMOrchestrator._is_environment_error("command not found: claude") is True
-    assert PMOrchestrator._is_environment_error("Build failed: tests not passing") is False
-    assert PMOrchestrator._is_environment_error("TypeError: cannot read property") is False
-    assert PMOrchestrator._is_environment_error(None) is False
-    assert PMOrchestrator._is_environment_error("") is False
+async def test_process_escalation_tool_error_proceeds_with_redesign(
+    orchestrator: PMOrchestrator, mock_db: AsyncMock, mock_state_machine: AsyncMock, mock_stream: AsyncMock
+) -> None:
+    """Tool error_category (non-zero exit) should proceed with phase-level auto-redesign, not skip."""
+    project_id = uuid.uuid4()
+    phase_id = uuid.uuid4()
+    task = make_task(
+        status=TaskStatus.redesign,
+        project_id=project_id,
+        phase_id=phase_id,
+        error_message="CLI exited with code 1",
+        qa_feedback_history=[{
+            "type": "execution_failure",
+            "attempt": 3,
+            "error": "CLI exited with code 1",
+            "error_category": "tool",
+            "timestamp": "2026-01-01T00:00:00Z",
+        }],
+        worker_prompt={"prompt": "do stuff"},
+        qa_prompt={"prompt": "review stuff"},
+    )
+
+    msg = {"task_id": str(task.id), "project_id": str(project_id), "_message_id": "esc-tool"}
+
+    mock_stream.redis.get = AsyncMock(return_value=None)  # no prior auto-redesigns
+
+    mock_project = MagicMock()
+    mock_project.id = project_id
+    mock_project.llm_config = {"architect": {"api_key": "sk-test", "model": "gpt-4o"}}
+
+    mock_phase = MagicMock()
+    mock_phase.id = phase_id
+    mock_phase.project_id = project_id
+    mock_phase.name = "Phase 1"
+    mock_phase.branch_name = "phase/1"
+
+    mock_task_repo = AsyncMock()
+    mock_task_repo.get_by_id = AsyncMock(return_value=task)
+    mock_task_repo.list_incomplete_in_phase = AsyncMock(return_value=[task])
+    mock_task_repo.list_done_in_phase = AsyncMock(return_value=[])
+    mock_task_repo.hard_delete_many = AsyncMock(return_value=0)
+    mock_task_repo.clear_dependencies = AsyncMock()
+    mock_task_repo.add_dependencies = AsyncMock()
+
+    with (
+        patch("backend.src.core.orchestrator.TaskRepository") as MockTaskRepo,
+        patch("backend.src.core.orchestrator.ProjectRepository") as MockProjectRepo,
+        patch("backend.src.core.orchestrator.PhaseRepository") as MockPhaseRepo,
+        patch("backend.src.core.orchestrator.create_llm_client_from_project") as mock_llm_factory,
+        patch("backend.src.core.orchestrator.get_prompt") as mock_get_prompt,
+    ):
+        MockTaskRepo.return_value = mock_task_repo
+        MockProjectRepo.return_value = AsyncMock(get_by_id=AsyncMock(return_value=mock_project))
+        MockPhaseRepo.return_value = AsyncMock(get_by_id=AsyncMock(return_value=mock_phase))
+
+        mock_llm = AsyncMock()
+        mock_llm.structured_output = AsyncMock(return_value={
+            "reasoning": "Fix CLI args",
+            "tasks": [{"id": str(task.id), "title": task.title, "worker_prompt": "fixed prompt", "qa_prompt": "review", "priority": "medium"}],
+        })
+        mock_llm_factory.return_value = mock_llm
+        mock_get_prompt.return_value = "mocked {failed_task_title} {failed_task_error} {failed_task_history} {done_tasks} {incomplete_tasks} {phase_name} {branch_name}"
+
+        await orchestrator._process_escalation(msg, mock_db)
+
+    # LLM was called and transition happened
+    mock_llm.structured_output.assert_called_once()
+    mock_state_machine.transition.assert_called()
+
+
+async def test_recover_orphaned_redesign_tasks(
+    orchestrator: PMOrchestrator, mock_stream: AsyncMock
+) -> None:
+    """Orphaned redesign tasks should have escalation messages re-published on startup."""
+    project_id = uuid.uuid4()
+    task = make_task(
+        status=TaskStatus.redesign,
+        project_id=project_id,
+        retry_count=3,
+        error_message="Build failed",
+        qa_feedback_history=[{"type": "execution_failure", "attempt": 3, "error": "Build failed"}],
+        title="Stuck Task",
+    )
+
+    mock_db = AsyncMock()
+    mock_session_ctx = AsyncMock()
+    mock_session_ctx.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_session_ctx.__aexit__ = AsyncMock(return_value=False)
+    db_session_factory = MagicMock(return_value=mock_session_ctx)
+
+    # Task is NOT flagged for intervention
+    mock_stream.redis.get = AsyncMock(return_value=None)
+
+    with patch("backend.src.core.orchestrator.TaskRepository") as MockTaskRepo:
+        mock_repo = AsyncMock()
+        mock_repo.list_by_project = AsyncMock(return_value=[task])
+        MockTaskRepo.return_value = mock_repo
+
+        await orchestrator._recover_orphaned_redesign_tasks(project_id, db_session_factory)
+
+    # Should re-publish escalation message
+    mock_stream.publish.assert_called_once()
+    call_args = mock_stream.publish.call_args
+    assert call_args[0][0] == "tasks:escalation"
+    msg = call_args[0][1]
+    assert msg["task_id"] == str(task.id)
+    assert msg["title"] == "Stuck Task"
+    assert msg["error_message"] == "Build failed"
+
+
+async def test_recover_orphaned_redesign_tasks_skips_intervention_flagged(
+    orchestrator: PMOrchestrator, mock_stream: AsyncMock
+) -> None:
+    """Tasks flagged as needing intervention should be skipped by recovery."""
+    project_id = uuid.uuid4()
+    task = make_task(
+        status=TaskStatus.redesign,
+        project_id=project_id,
+        title="Intervention Task",
+    )
+
+    mock_db = AsyncMock()
+    mock_session_ctx = AsyncMock()
+    mock_session_ctx.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_session_ctx.__aexit__ = AsyncMock(return_value=False)
+    db_session_factory = MagicMock(return_value=mock_session_ctx)
+
+    # Task IS flagged for intervention
+    mock_stream.redis.get = AsyncMock(return_value=b"1")
+
+    with patch("backend.src.core.orchestrator.TaskRepository") as MockTaskRepo:
+        mock_repo = AsyncMock()
+        mock_repo.list_by_project = AsyncMock(return_value=[task])
+        MockTaskRepo.return_value = mock_repo
+
+        await orchestrator._recover_orphaned_redesign_tasks(project_id, db_session_factory)
+
+    # Should NOT re-publish — task needs manual intervention
+    mock_stream.publish.assert_not_called()
+
+
+async def test_handle_qa_failure_uses_error_message_as_fallback(
+    orchestrator: PMOrchestrator, mock_db: AsyncMock, mock_state_machine: AsyncMock
+) -> None:
+    """When QA fails due to exception (no feedback), error_message should be used as effective feedback."""
+    task = make_task(
+        status=TaskStatus.review, retry_count=2, max_retries=3,
+        worker_prompt={"prompt": "do stuff"},
+    )
+
+    # Simulate QA exception: feedback is empty, error_message has the real error
+    await orchestrator._handle_qa_failure(
+        task, mock_db, "w-1", "", "codec can't encode character", "environment"
+    )
+
+    assert task.retry_count == 3
+    assert task.qa_feedback_history is not None
+    assert len(task.qa_feedback_history) == 1
+    assert task.qa_feedback_history[0]["feedback"] == "codec can't encode character"
+    assert task.qa_feedback_history[0]["error_category"] == "environment"
+
+    # Should escalate to redesign with the error message
+    mock_state_machine.transition.assert_called_once()
+    call_kwargs = mock_state_machine.transition.call_args[1]
+    assert call_kwargs["new_status"] == TaskStatus.redesign
+    assert "codec can't encode" in call_kwargs["reason"]
+
+
+# -- _check_and_advance_phase -------------------------------------------------
+
+
+async def test_check_and_advance_phase_completes_and_activates_next(
+    orchestrator: PMOrchestrator,
+) -> None:
+    """When all tasks are done in active phase, complete it and activate the next."""
+    from backend.src.models import Phase, PhaseStatus
+
+    project_id = uuid.uuid4()
+    mock_db = AsyncMock()
+
+    active_phase = MagicMock(spec=Phase)
+    active_phase.id = uuid.uuid4()
+    active_phase.name = "Phase 1"
+    active_phase.order = 1
+    active_phase.status = PhaseStatus.active
+
+    next_phase = MagicMock(spec=Phase)
+    next_phase.id = uuid.uuid4()
+    next_phase.name = "Phase 2"
+    next_phase.order = 2
+    next_phase.status = PhaseStatus.pending
+
+    with patch("backend.src.core.orchestrator.PhaseRepository") as MockPhaseRepo:
+        mock_phase_repo = AsyncMock()
+        mock_phase_repo.get_active_phase = AsyncMock(return_value=active_phase)
+        mock_phase_repo.count_incomplete_tasks = AsyncMock(return_value=0)
+        mock_phase_repo.get_next_pending_phase = AsyncMock(return_value=next_phase)
+        MockPhaseRepo.return_value = mock_phase_repo
+
+        events = await orchestrator._check_and_advance_phase(project_id, mock_db)
+
+    assert active_phase.status == PhaseStatus.completed
+    assert next_phase.status == PhaseStatus.active
+    assert len(events) == 2
+    assert events[0][0] == "phase_completed"
+    assert events[0][1]["phase_name"] == "Phase 1"
+    assert events[1][0] == "phase_activated"
+    assert events[1][1]["phase_name"] == "Phase 2"
+
+
+async def test_check_and_advance_phase_no_active_phase(
+    orchestrator: PMOrchestrator,
+) -> None:
+    """When no active phase, return empty events."""
+    project_id = uuid.uuid4()
+    mock_db = AsyncMock()
+
+    with patch("backend.src.core.orchestrator.PhaseRepository") as MockPhaseRepo:
+        mock_phase_repo = AsyncMock()
+        mock_phase_repo.get_active_phase = AsyncMock(return_value=None)
+        MockPhaseRepo.return_value = mock_phase_repo
+
+        events = await orchestrator._check_and_advance_phase(project_id, mock_db)
+
+    assert events == []
+
+
+async def test_check_and_advance_phase_incomplete_tasks(
+    orchestrator: PMOrchestrator,
+) -> None:
+    """When active phase has incomplete tasks, don't advance."""
+    from backend.src.models import PhaseStatus
+
+    project_id = uuid.uuid4()
+    mock_db = AsyncMock()
+
+    active_phase = MagicMock()
+    active_phase.id = uuid.uuid4()
+    active_phase.status = PhaseStatus.active
+
+    with patch("backend.src.core.orchestrator.PhaseRepository") as MockPhaseRepo:
+        mock_phase_repo = AsyncMock()
+        mock_phase_repo.get_active_phase = AsyncMock(return_value=active_phase)
+        mock_phase_repo.count_incomplete_tasks = AsyncMock(return_value=3)
+        MockPhaseRepo.return_value = mock_phase_repo
+
+        events = await orchestrator._check_and_advance_phase(project_id, mock_db)
+
+    assert events == []
+    assert active_phase.status == PhaseStatus.active  # unchanged
+
+
+async def test_check_and_advance_phase_no_next_phase(
+    orchestrator: PMOrchestrator,
+) -> None:
+    """When phase completes but there's no next phase, only emit completion event."""
+    from backend.src.models import Phase, PhaseStatus
+
+    project_id = uuid.uuid4()
+    mock_db = AsyncMock()
+
+    active_phase = MagicMock(spec=Phase)
+    active_phase.id = uuid.uuid4()
+    active_phase.name = "Final Phase"
+    active_phase.order = 1
+    active_phase.status = PhaseStatus.active
+
+    with patch("backend.src.core.orchestrator.PhaseRepository") as MockPhaseRepo:
+        mock_phase_repo = AsyncMock()
+        mock_phase_repo.get_active_phase = AsyncMock(return_value=active_phase)
+        mock_phase_repo.count_incomplete_tasks = AsyncMock(return_value=0)
+        mock_phase_repo.get_next_pending_phase = AsyncMock(return_value=None)
+        MockPhaseRepo.return_value = mock_phase_repo
+
+        events = await orchestrator._check_and_advance_phase(project_id, mock_db)
+
+    assert active_phase.status == PhaseStatus.completed
+    assert len(events) == 1
+    assert events[0][0] == "phase_completed"
+
+
+# -- _process_escalation error paths ------------------------------------------
+
+
+async def test_process_escalation_project_not_found(
+    orchestrator: PMOrchestrator, mock_db: AsyncMock, mock_state_machine: AsyncMock, mock_stream: AsyncMock
+) -> None:
+    """When project not found, should flag task for intervention."""
+    project_id = uuid.uuid4()
+    task = make_task(status=TaskStatus.redesign, project_id=project_id)
+
+    msg = {"task_id": str(task.id), "project_id": str(project_id), "_message_id": "esc-proj"}
+
+    with (
+        patch("backend.src.core.orchestrator.TaskRepository") as MockTaskRepo,
+        patch("backend.src.core.orchestrator.ProjectRepository") as MockProjectRepo,
+    ):
+        MockTaskRepo.return_value = AsyncMock(get_by_id=AsyncMock(return_value=task))
+        MockProjectRepo.return_value = AsyncMock(get_by_id=AsyncMock(return_value=None))
+
+        await orchestrator._process_escalation(msg, mock_db)
+
+    mock_state_machine.transition.assert_not_called()
+    mock_stream.redis.set.assert_called_once_with(f"task:{task.id}:needs_intervention", "1")
+    mock_stream.publish_board_event.assert_called_once()
+    assert "Project not found" in mock_stream.publish_board_event.call_args[0][1]["reason"]
+
+
+async def test_process_escalation_phase_not_found(
+    orchestrator: PMOrchestrator, mock_db: AsyncMock, mock_state_machine: AsyncMock, mock_stream: AsyncMock
+) -> None:
+    """When phase not found, should flag task for intervention."""
+    project_id = uuid.uuid4()
+    task = make_task(status=TaskStatus.redesign, project_id=project_id)
+
+    msg = {"task_id": str(task.id), "project_id": str(project_id), "_message_id": "esc-phase"}
+
+    mock_project = MagicMock()
+    mock_project.id = project_id
+    mock_project.llm_config = {"architect": {"api_key": "test-key"}}
+
+    with (
+        patch("backend.src.core.orchestrator.TaskRepository") as MockTaskRepo,
+        patch("backend.src.core.orchestrator.ProjectRepository") as MockProjectRepo,
+        patch("backend.src.core.orchestrator.PhaseRepository") as MockPhaseRepo,
+        patch("backend.src.core.orchestrator.create_llm_client_from_project") as mock_create_llm,
+    ):
+        MockTaskRepo.return_value = AsyncMock(get_by_id=AsyncMock(return_value=task))
+        MockProjectRepo.return_value = AsyncMock(get_by_id=AsyncMock(return_value=mock_project))
+        MockPhaseRepo.return_value = AsyncMock(get_by_id=AsyncMock(return_value=None))
+        mock_create_llm.return_value = AsyncMock()
+
+        await orchestrator._process_escalation(msg, mock_db)
+
+    mock_state_machine.transition.assert_not_called()
+    mock_stream.redis.set.assert_called_once_with(f"task:{task.id}:needs_intervention", "1")
+    assert "Phase not found" in mock_stream.publish_board_event.call_args[0][1]["reason"]
+
+
+async def test_process_escalation_no_llm_config(
+    orchestrator: PMOrchestrator, mock_db: AsyncMock, mock_state_machine: AsyncMock, mock_stream: AsyncMock
+) -> None:
+    """When project has no LLM config, should flag task for intervention."""
+    project_id = uuid.uuid4()
+    task = make_task(status=TaskStatus.redesign, project_id=project_id)
+
+    msg = {"task_id": str(task.id), "project_id": str(project_id), "_message_id": "esc-noconfig"}
+
+    mock_project = MagicMock()
+    mock_project.id = project_id
+    mock_project.llm_config = None  # No LLM config
+
+    with (
+        patch("backend.src.core.orchestrator.TaskRepository") as MockTaskRepo,
+        patch("backend.src.core.orchestrator.ProjectRepository") as MockProjectRepo,
+        patch("backend.src.core.orchestrator.create_llm_client_from_project") as mock_create_llm,
+    ):
+        MockTaskRepo.return_value = AsyncMock(get_by_id=AsyncMock(return_value=task))
+        MockProjectRepo.return_value = AsyncMock(get_by_id=AsyncMock(return_value=mock_project))
+        mock_create_llm.side_effect = ValueError("Project has no architect LLM configuration")
+
+        await orchestrator._process_escalation(msg, mock_db)
+
+    mock_state_machine.transition.assert_not_called()
+    mock_stream.redis.set.assert_called_once()
+    assert "No architect LLM configuration" in mock_stream.publish_board_event.call_args[0][1]["reason"]
+
+
+async def test_process_escalation_invalid_tasks_format(
+    orchestrator: PMOrchestrator, mock_db: AsyncMock, mock_state_machine: AsyncMock, mock_stream: AsyncMock
+) -> None:
+    """When LLM returns non-list tasks, should flag task for intervention."""
+    project_id = uuid.uuid4()
+    phase_id = uuid.uuid4()
+    task = make_task(status=TaskStatus.redesign, project_id=project_id, phase_id=phase_id)
+
+    msg = {"task_id": str(task.id), "project_id": str(project_id), "_message_id": "esc-invalid"}
+
+    mock_project = MagicMock()
+    mock_project.id = project_id
+    mock_project.llm_config = {"architect": {"api_key": "test-key"}}
+
+    mock_phase = MagicMock()
+    mock_phase.id = phase_id
+    mock_phase.name = "Phase 1"
+    mock_phase.branch_name = "phase/1"
+
+    mock_task_repo = AsyncMock()
+    mock_task_repo.get_by_id = AsyncMock(return_value=task)
+    mock_task_repo.list_incomplete_in_phase = AsyncMock(return_value=[task])
+    mock_task_repo.list_done_in_phase = AsyncMock(return_value=[])
+
+    with (
+        patch("backend.src.core.orchestrator.TaskRepository") as MockTaskRepo,
+        patch("backend.src.core.orchestrator.ProjectRepository") as MockProjectRepo,
+        patch("backend.src.core.orchestrator.PhaseRepository") as MockPhaseRepo,
+        patch("backend.src.core.orchestrator.create_llm_client_from_project") as mock_create_llm,
+        patch("backend.src.core.orchestrator.get_prompt") as mock_get_prompt,
+    ):
+        MockTaskRepo.return_value = mock_task_repo
+        MockProjectRepo.return_value = AsyncMock(get_by_id=AsyncMock(return_value=mock_project))
+        MockPhaseRepo.return_value = AsyncMock(get_by_id=AsyncMock(return_value=mock_phase))
+        mock_llm_client = AsyncMock()
+        # LLM returns tasks as a string, not a list
+        mock_llm_client.structured_output = AsyncMock(return_value={"reasoning": "...", "tasks": "not a list"})
+        mock_create_llm.return_value = mock_llm_client
+        mock_get_prompt.return_value = "mocked {failed_task_title} {failed_task_error} {failed_task_history} {done_tasks} {incomplete_tasks} {phase_name} {branch_name}"
+
+        await orchestrator._process_escalation(msg, mock_db)
+
+    mock_state_machine.transition.assert_not_called()
+    mock_stream.redis.set.assert_called_once()
+    assert "invalid tasks format" in mock_stream.publish_board_event.call_args[0][1]["reason"]
+
+
+# -- _promote_waiting_tasks (outer wrapper) -----------------------------------
+
+
+async def test_promote_waiting_tasks_commits_on_success(
+    orchestrator: PMOrchestrator, mock_state_machine: AsyncMock
+) -> None:
+    """_promote_waiting_tasks should create a DB session and commit."""
+    project_id = uuid.uuid4()
+    mock_db = AsyncMock()
+    mock_session_ctx = AsyncMock()
+    mock_session_ctx.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_session_ctx.__aexit__ = AsyncMock(return_value=False)
+    db_session_factory = MagicMock(return_value=mock_session_ctx)
+
+    with patch.object(orchestrator, "_promote_waiting_tasks_inner", new_callable=AsyncMock) as mock_inner:
+        await orchestrator._promote_waiting_tasks(project_id, db_session_factory)
+
+    mock_inner.assert_called_once_with(project_id, mock_db)
+    mock_db.commit.assert_called_once()
+
+
+async def test_promote_waiting_tasks_handles_error(
+    orchestrator: PMOrchestrator,
+) -> None:
+    """_promote_waiting_tasks should catch exceptions without propagating."""
+    project_id = uuid.uuid4()
+    mock_db = AsyncMock()
+    mock_session_ctx = AsyncMock()
+    mock_session_ctx.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_session_ctx.__aexit__ = AsyncMock(return_value=False)
+    db_session_factory = MagicMock(return_value=mock_session_ctx)
+
+    with patch.object(orchestrator, "_promote_waiting_tasks_inner", new_callable=AsyncMock) as mock_inner:
+        mock_inner.side_effect = Exception("DB error")
+        # Should not raise
+        await orchestrator._promote_waiting_tasks(project_id, db_session_factory)
+
+
+# -- _process_result: commit_hash storage -------------------------------------
+
+
+async def test_process_result_stores_commit_hash(
+    orchestrator: PMOrchestrator, mock_db: AsyncMock, mock_state_machine: AsyncMock
+) -> None:
+    """Execution success with commit_hash should store it on the task."""
+    task = make_task(status=TaskStatus.in_progress)
+
+    result = {
+        "task_id": str(task.id),
+        "type": "execution",
+        "success": "true",
+        "worker_id": "executor-1",
+        "commit_hash": "abc123def",
+        "_message_id": "msg-1",
+    }
+
+    with patch("backend.src.core.orchestrator.TaskRepository") as MockRepo:
+        MockRepo.return_value = AsyncMock(get_by_id=AsyncMock(return_value=task))
+        await orchestrator._process_result(result, mock_db)
+
+    assert task.commit_hash == "abc123def"

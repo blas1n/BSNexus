@@ -82,7 +82,6 @@ def test_can_transition_all_valid_paths(state_machine: TaskStateMachine) -> None
         (TaskStatus.waiting, TaskStatus.ready),
         (TaskStatus.ready, TaskStatus.queued),
         (TaskStatus.queued, TaskStatus.in_progress),
-        (TaskStatus.queued, TaskStatus.ready),
         (TaskStatus.in_progress, TaskStatus.review),
         (TaskStatus.in_progress, TaskStatus.ready),
         (TaskStatus.in_progress, TaskStatus.redesign),
@@ -90,7 +89,6 @@ def test_can_transition_all_valid_paths(state_machine: TaskStateMachine) -> None
         (TaskStatus.review, TaskStatus.in_progress),
         (TaskStatus.review, TaskStatus.redesign),
         (TaskStatus.redesign, TaskStatus.waiting),
-        (TaskStatus.redesign, TaskStatus.done),
     ]
     for from_s, to_s in valid_pairs:
         assert state_machine.can_transition(from_s, to_s) is True, f"{from_s} -> {to_s} should be valid"
@@ -106,6 +104,7 @@ def test_can_transition_invalid_paths(state_machine: TaskStateMachine) -> None:
         (TaskStatus.ready, TaskStatus.done),
         (TaskStatus.ready, TaskStatus.in_progress),
         (TaskStatus.ready, TaskStatus.waiting),
+        (TaskStatus.queued, TaskStatus.ready),
         (TaskStatus.queued, TaskStatus.done),
         (TaskStatus.queued, TaskStatus.review),
         (TaskStatus.queued, TaskStatus.redesign),
@@ -119,6 +118,7 @@ def test_can_transition_invalid_paths(state_machine: TaskStateMachine) -> None:
         (TaskStatus.redesign, TaskStatus.queued),
         (TaskStatus.redesign, TaskStatus.in_progress),
         (TaskStatus.redesign, TaskStatus.review),
+        (TaskStatus.redesign, TaskStatus.done),
     ]
     for from_s, to_s in invalid_pairs:
         assert state_machine.can_transition(from_s, to_s) is False, f"{from_s} -> {to_s} should be invalid"
@@ -136,8 +136,8 @@ def test_done_is_terminal(state_machine: TaskStateMachine) -> None:
 
 
 def test_redesign_limited_transitions(state_machine: TaskStateMachine) -> None:
-    """redesign can only go to waiting or done."""
-    allowed = {TaskStatus.waiting, TaskStatus.done}
+    """redesign can only go to waiting."""
+    allowed = {TaskStatus.waiting}
     for status in TaskStatus:
         if status in allowed:
             assert state_machine.can_transition(TaskStatus.redesign, status) is True
@@ -187,17 +187,6 @@ async def test_valid_transition_queued_to_in_progress(
     assert result.status == TaskStatus.in_progress
     assert result.started_at is not None
     assert result.worker_id == worker_id
-
-
-async def test_valid_transition_queued_to_ready(
-    state_machine: TaskStateMachine, mock_db: AsyncMock, mock_stream: AsyncMock
-) -> None:
-    task = make_task(status=TaskStatus.queued)
-    result = await state_machine.transition(
-        task, TaskStatus.ready, db_session=mock_db, stream_manager=mock_stream
-    )
-    assert result.status == TaskStatus.ready
-    assert result.version == 2
 
 
 async def test_valid_transition_in_progress_to_review(
@@ -318,24 +307,16 @@ async def test_valid_transition_redesign_to_waiting(
     assert result.version == 2
 
 
-async def test_valid_transition_redesign_to_done(
+async def test_invalid_transition_redesign_to_done(
     state_machine: TaskStateMachine, mock_db: AsyncMock, mock_stream: AsyncMock
 ) -> None:
-    """redesign -> done means the task was deleted/cancelled by the Architect."""
+    """redesign -> done is no longer allowed (tasks stay in redesign or go to waiting)."""
     task = make_task(status=TaskStatus.redesign)
-
-    with patch("backend.src.core.state_machine.TaskRepository") as MockRepo:
-        mock_repo_instance = AsyncMock()
-        mock_repo_instance.find_waiting_dependents = AsyncMock(return_value=[])
-        MockRepo.return_value = mock_repo_instance
-
-        result = await state_machine.transition(
+    with pytest.raises(ValueError, match="Invalid transition"):
+        await state_machine.transition(
             task, TaskStatus.done, db_session=mock_db, stream_manager=mock_stream,
-            reason="Task deleted by architect",
+            reason="This should fail",
         )
-
-    assert result.status == TaskStatus.done
-    assert result.completed_at is not None
 
 
 # -- Invalid transitions ------------------------------------------------------
@@ -683,15 +664,6 @@ async def test_on_ready_from_waiting_does_not_reset_fields(
     await state_machine.transition(task, TaskStatus.ready, db_session=mock_db, stream_manager=mock_stream)
     assert task.status == TaskStatus.ready
     # No fields should be explicitly touched by _on_ready for waiting->ready
-
-
-async def test_on_ready_from_queued_does_not_reset_fields(
-    state_machine: TaskStateMachine, mock_db: AsyncMock, mock_stream: AsyncMock
-) -> None:
-    """queued -> ready should not reset fields (only in_progress -> ready does)."""
-    task = make_task(status=TaskStatus.queued)
-    await state_machine.transition(task, TaskStatus.ready, db_session=mock_db, stream_manager=mock_stream)
-    assert task.status == TaskStatus.ready
 
 
 # -- Side effects: _on_done ---------------------------------------------------

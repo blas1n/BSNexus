@@ -226,6 +226,7 @@ class WorkerResultRequest(BaseModel):
     passed: bool = False
     output_path: str = ""
     error_message: str = ""
+    error_category: str = ""
     commit_hash: str = ""
     branch_name: str = ""
     feedback: str = ""
@@ -238,11 +239,18 @@ class BoardColumn(BaseModel):
     tasks: list[TaskResponse]
 
 
+class PhaseInfoResponse(BaseModel):
+    name: str
+    order: int
+    status: PhaseStatus
+
+
 class BoardResponse(BaseModel):
     project_id: uuid.UUID
     columns: dict[str, BoardColumn]
     stats: dict[str, int]
     workers: dict[str, int] = Field(default_factory=dict)
+    phases: dict[str, PhaseInfoResponse] = Field(default_factory=dict)
     redesign_tasks: list[TaskResponse] = Field(default_factory=list)
 
 
@@ -320,19 +328,19 @@ class FinalizeRequest(BaseModel):
     pm_llm_config: Optional[LLMConfigInput] = None
 
 
-class RedesignAction(str, enum.Enum):
-    modify = "modify"
-    delete = "delete"
-    split = "split"
+class PhaseRedesignRequest(BaseModel):
+    """Request to trigger manual phase-level redesign."""
+    llm_config: Optional[LLMConfigInput] = None
 
 
-class TaskRedesignRequest(BaseModel):
-    action: RedesignAction
-    title: Optional[str] = None
-    description: Optional[str] = None
-    worker_prompt: Optional[str] = None
-    qa_prompt: Optional[str] = None
-    split_tasks: Optional[list[dict]] = None
+class PhaseRedesignResponse(BaseModel):
+    """Response from phase-level redesign."""
+    phase_id: uuid.UUID
+    project_id: uuid.UUID
+    reasoning: str
+    tasks_kept: int
+    tasks_deleted: int
+    tasks_created: int
 
 
 class AddTaskRequest(BaseModel):
