@@ -22,6 +22,10 @@ from backend.src.utils.worker_registry import WorkerRegistry
 
 logger = logging.getLogger(__name__)
 
+# Redis key TTLs
+_INTERVENTION_KEY_TTL = 86400  # 24 hours — cleared early when user triggers manual redesign
+_RECOVERY_KEY_TTL = 86400      # 24 hours — matches intervention TTL to prevent counter reset loop
+
 
 class PMOrchestrator:
     """PM Orchestrator - task scheduling, result processing, and auto-retry."""
@@ -79,12 +83,29 @@ class PMOrchestrator:
                 repo = TaskRepository(db)
                 redesign_tasks = await repo.list_by_project(project_id, status=TaskStatus.redesign)
                 for task in redesign_tasks:
-                    # Skip tasks that need manual intervention
+                    # Skip tasks that need manual intervention (check both Redis flag and DB marker)
                     intervention_key = f"task:{task.id}:needs_intervention"
                     needs_intervention = await self.stream_manager.redis.get(intervention_key)
                     if needs_intervention:
                         logger.debug("Skipping intervention-flagged redesign task %s", task.id)
                         continue
+                    if task.error_message and task.error_message.startswith("Redesign failed:"):
+                        logger.debug("Skipping redesign-failed task %s (DB marker)", task.id)
+                        # Restore the Redis flag that may have been lost on restart
+                        await self.stream_manager.redis.set(intervention_key, "1", ex=_INTERVENTION_KEY_TTL)
+                        continue
+                    # Guard: stop recovering the same task repeatedly
+                    recovery_key = f"task:{task.id}:recovery_count"
+                    recovery_count = int(await self.stream_manager.redis.get(recovery_key) or 0)
+                    if recovery_count >= 3:
+                        logger.warning(
+                            "Redesign task %s recovered %d times without resolution, flagging for intervention",
+                            task.id, recovery_count,
+                        )
+                        await self.stream_manager.redis.set(intervention_key, "1", ex=_INTERVENTION_KEY_TTL)
+                        continue
+                    await self.stream_manager.redis.set(recovery_key, str(recovery_count + 1), ex=_RECOVERY_KEY_TTL)
+
                     logger.info("Recovering orphaned redesign task %s: %s", task.id, task.title)
                     await self.stream_manager.publish(RedisStreamManager.TASKS_ESCALATION, {
                         "task_id": str(task.id),
@@ -500,8 +521,8 @@ class PMOrchestrator:
         task.error_message = f"Redesign failed: {reason}"
         # Flag in Redis so recovery loop skips this task
         intervention_key = f"task:{task.id}:needs_intervention"
-        await self.stream_manager.redis.set(intervention_key, "1")
-        # No TTL — flag cleared when user triggers manual redesign via API
+        await self.stream_manager.redis.set(intervention_key, "1", ex=_INTERVENTION_KEY_TTL)
+        # TTL also cleared early when user triggers manual redesign via API
 
         await self.stream_manager.publish_board_event("auto_redesign_failed", {
             "task_id": str(task.id),
@@ -659,7 +680,7 @@ class PMOrchestrator:
 
         # Increment Redis counter with TTL
         await self.stream_manager.redis.incr(redis_key)
-        await self.stream_manager.redis.expire(redis_key, 86400)  # 24h TTL
+        await self.stream_manager.redis.expire(redis_key, _INTERVENTION_KEY_TTL)
 
         # Publish success event
         await self.stream_manager.publish_board_event("auto_redesign_applied", {
@@ -736,15 +757,16 @@ class PMOrchestrator:
             task.worker_id = None
             task.reviewer_id = None
             task.started_at = None
-            # Transition to waiting
-            await self.state_machine.transition(
-                task=task,
-                new_status=TaskStatus.waiting,
-                reason=f"Phase redesign: {reasoning}",
-                actor="architect",
-                db_session=db,
-                stream_manager=self.stream_manager,
-            )
+            # Transition to waiting (skip if already in waiting)
+            if task.status != TaskStatus.waiting:
+                await self.state_machine.transition(
+                    task=task,
+                    new_status=TaskStatus.waiting,
+                    reason=f"Phase redesign: {reasoning}",
+                    actor="architect",
+                    db_session=db,
+                    stream_manager=self.stream_manager,
+                )
 
         # 3. Create new tasks
         # Build a title→id map for resolving depends_on references to new tasks
