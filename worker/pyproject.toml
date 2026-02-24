@@ -6,6 +6,7 @@ dependencies = [
     "httpx>=0.26.0",
     "pydantic>=2.5.0",
     "pydantic-settings>=2.0.0",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
@@ -23,7 +24,10 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["worker", "worker.executors"]
+packages = ["worker", "worker.executors", "worker.prompts"]
+
+[tool.setuptools.package-data]
+"worker.prompts" = ["*.yaml"]
 
 [tool.setuptools.package-dir]
 worker = "src"

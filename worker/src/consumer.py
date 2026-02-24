@@ -7,6 +7,11 @@ from worker.executors.base import BaseExecutor
 from worker.git_ops import WorkerGitOps
 from worker.log import log
 
+_ENVIRONMENT_EXCEPTIONS = (
+    FileNotFoundError, PermissionError, OSError,
+    UnicodeEncodeError, UnicodeDecodeError,
+)
+
 
 class TaskConsumer:
     def __init__(self, agent: WorkerAgent, executor: BaseExecutor) -> None:
@@ -41,6 +46,13 @@ class TaskConsumer:
                 if self.agent._running:
                     log.error("Poll loop error: %s: %s", type(e).__name__, e)
                     await asyncio.sleep(5)
+
+    @staticmethod
+    def _classify_exception(exc: Exception) -> str:
+        """Classify an exception into an error category."""
+        if isinstance(exc, _ENVIRONMENT_EXCEPTIONS):
+            return "environment"
+        return ""
 
     @staticmethod
     def _extract_prompt(data: dict, key: str) -> str:
@@ -99,13 +111,15 @@ class TaskConsumer:
             result = await self.executor.execute(prompt, context)
             elapsed = time.monotonic() - t0
 
-            commit_hash = ""
-            if result.success and git_ops and branch_name:
+            # Log workspace state after execution for debugging
+            if git_ops:
                 try:
-                    commit_hash = await git_ops.commit_task(task_id, title, branch_name)
-                    log.info("    git: committed %s", commit_hash[:8] if commit_hash else "(no changes)")
-                except RuntimeError:
-                    log.warning("    git: commit failed (non-fatal)")
+                    status = await git_ops.get_status()
+                    log.info("    git status after exec: %s", status[:300] if status else "(clean)")
+                except Exception as e:
+                    log.debug("    git status after exec: (failed to get status: %s)", e)
+
+            # No commit here — commit happens after QA pass in _process_qa()
 
             if result.success:
                 log.info("<<< TASK DONE      task_id=%s success=true  elapsed=%.1fs", task_id, elapsed)
@@ -121,7 +135,8 @@ class TaskConsumer:
                 "success": result.success,
                 "output_path": result.output_path or "",
                 "error_message": result.error_message or "",
-                "commit_hash": commit_hash,
+                "error_category": result.error_category,
+                "commit_hash": "",
                 "branch_name": branch_name,
             })
         except Exception as e:
@@ -134,6 +149,7 @@ class TaskConsumer:
                 "task_id": task_id,
                 "success": False,
                 "error_message": str(e),
+                "error_category": self._classify_exception(e),
                 "commit_hash": "",
                 "branch_name": branch_name,
             })
@@ -165,9 +181,14 @@ class TaskConsumer:
             })
 
     async def _process_qa(self, msg_id: str, stream: str, data: dict) -> None:
-        """Execute a QA review and submit result via HTTP."""
+        """Execute a QA review and submit result via HTTP.
+
+        On QA pass, commits the working tree changes and includes commit_hash in the result.
+        """
         task_id = str(data.get("task_id", ""))
         repo_path = str(data.get("repo_path", ""))
+        branch_name = str(data.get("branch_name", ""))
+        title = str(data.get("title", ""))
 
         log.info(">>> QA RECEIVED    task_id=%s repo=%s", task_id, repo_path or "(none)")
 
@@ -175,6 +196,13 @@ class TaskConsumer:
 
         t0 = time.monotonic()
         try:
+            # Set up git (branch checkout only — the reviewer will run git diff itself)
+            git_ops = None
+            if repo_path:
+                git_ops = WorkerGitOps(repo_path)
+                if branch_name:
+                    await git_ops.ensure_branch(branch_name)
+
             context: dict = {"task_id": task_id}
             if repo_path:
                 context["workspace_dir"] = repo_path
@@ -182,6 +210,18 @@ class TaskConsumer:
             log.info("    reviewing via %s ...", type(self.executor).__name__)
             result = await self.executor.review(prompt, context)
             elapsed = time.monotonic() - t0
+
+            # On QA pass: commit the working tree changes
+            commit_hash = ""
+            if result.passed and git_ops and branch_name:
+                try:
+                    commit_hash = await git_ops.commit_task(task_id, title, branch_name)
+                    if commit_hash:
+                        log.info("    git: committed after QA pass %s", commit_hash[:8])
+                    else:
+                        log.warning("    qa: passed but no file changes to commit")
+                except RuntimeError:
+                    log.warning("    git: commit after QA pass failed")
 
             if result.passed:
                 log.info("<<< QA DONE        task_id=%s passed=true  elapsed=%.1fs", task_id, elapsed)
@@ -198,6 +238,8 @@ class TaskConsumer:
                 "passed": result.passed,
                 "feedback": result.feedback,
                 "error_message": result.error_message or "",
+                "error_category": result.error_category,
+                "commit_hash": commit_hash,
             })
         except Exception as e:
             elapsed = time.monotonic() - t0
@@ -210,4 +252,5 @@ class TaskConsumer:
                 "passed": False,
                 "feedback": "",
                 "error_message": str(e),
+                "error_category": self._classify_exception(e),
             })

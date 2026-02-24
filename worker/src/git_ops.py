@@ -42,12 +42,22 @@ class WorkerGitOps:
                 await self._run("checkout", "-b", branch_name)
 
     async def commit_task(self, task_id: str, title: str, branch_name: str) -> str:
-        """Stage all changes and commit. Returns the commit hash."""
+        """Stage all changes and commit. Returns commit hash, or empty string if no changes."""
         await self.ensure_branch(branch_name)
         await self._run("add", ".")
+        # git diff --cached --quiet exits 0 when no staged changes, 1 when there are
+        try:
+            await self._run("diff", "--cached", "--quiet")
+            return ""  # nothing to commit
+        except RuntimeError:
+            pass  # staged changes exist — proceed
         message = f"feat(task-{task_id}): {title}"
-        await self._run("commit", "-m", message, "--allow-empty")
+        await self._run("commit", "-m", message)
         return (await self._run("rev-parse", "HEAD")).strip()
+
+    async def get_status(self) -> str:
+        """Get short git status output."""
+        return await self._run("status", "--short")
 
     async def revert_task(self, commit_hash: str, branch_name: str) -> None:
         """Revert a specific commit on the given branch."""

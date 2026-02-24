@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Optional
+from typing import Literal, Optional
 
 
 @dataclass
@@ -10,6 +10,7 @@ class ExecutionResult:
     error_message: Optional[str] = None
     stdout: str = ""
     stderr: str = ""
+    error_category: Literal["environment", "tool", ""] = ""
 
 
 @dataclass
@@ -17,6 +18,7 @@ class ReviewResult:
     passed: bool
     feedback: str = ""
     error_message: Optional[str] = None
+    error_category: Literal["environment", "tool", ""] = ""
 
 
 class BaseExecutor(ABC):
