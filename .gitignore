@@ -32,6 +32,7 @@ shared_storage/
 
 # Logs
 *.log
+logs/
 
 # Coverage
 htmlcov/

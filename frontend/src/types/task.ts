@@ -1,6 +1,15 @@
 export type TaskStatus = 'waiting' | 'ready' | 'queued' | 'in_progress' | 'review' | 'done' | 'redesign'
 export type TaskPriority = 'low' | 'medium' | 'high' | 'critical'
 
+export interface QAFeedbackEntry {
+  type: 'qa_failure' | 'execution_failure'
+  attempt: number
+  feedback?: string
+  error?: string
+  error_category?: string
+  timestamp: string
+}
+
 export interface Task {
   id: string
   project_id: string
@@ -20,7 +29,7 @@ export interface Task {
   error_message: string | null
   retry_count: number
   max_retries: number
-  qa_feedback_history: Array<Record<string, unknown>> | null
+  qa_feedback_history: Array<QAFeedbackEntry> | null
   version: number
   created_at: string
   updated_at: string

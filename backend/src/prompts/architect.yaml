@@ -69,6 +69,15 @@ finalize: |
 
   {design_context}
 
+  ## Important Rules
+  - The FIRST task of Phase 1 MUST be "Project Setup" — initialize the project with
+    proper .gitignore, README.md, and any scaffolding required by the tech stack
+    (e.g. package.json, pyproject.toml, directory structure).
+    This task must have NO dependencies and all other tasks in Phase 1 must depend on it
+    (directly or transitively via depends_on_indices).
+  - The .gitignore in the setup task must match the chosen tech stack (e.g. node_modules/
+    and dist/ for Node.js, __pycache__/ and .venv/ for Python, etc).
+
   Return JSON in this exact format:
   {{
     "project_name": "...",

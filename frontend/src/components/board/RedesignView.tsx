@@ -148,9 +148,11 @@ function ManualRedesignView({
                 <span className="text-sm font-medium text-text-primary truncate">{task.title}</span>
                 <Badge color="redesign" label={`${task.retry_count}/${task.max_retries}`} size="sm" />
               </div>
-              <p className="text-xs text-text-tertiary truncate">
-                {task.error_message || 'No error details'}
-              </p>
+              {task.error_message && (
+                <p className="text-xs text-text-tertiary mt-1 line-clamp-2">
+                  {task.error_message}
+                </p>
+              )}
             </div>
           ))}
         </div>
@@ -171,23 +173,45 @@ function ManualRedesignView({
             Tasks may be modified, removed, or new tasks may be added.
           </p>
 
-          {/* Error details */}
+          {/* Task failure details */}
           {tasks.map((task) => (
-            task.error_message && (
-              <div
-                key={task.id}
-                className="mb-4 rounded-lg border p-4"
-                style={{
-                  backgroundColor: 'color-mix(in srgb, var(--status-redesign) 10%, transparent)',
-                  borderColor: 'var(--status-redesign)',
-                }}
-              >
-                <h3 className="text-sm font-medium mb-1" style={{ color: 'var(--status-redesign)' }}>
-                  {task.title}
-                </h3>
-                <p className="text-sm text-text-primary whitespace-pre-wrap">{task.error_message}</p>
-              </div>
-            )
+            <div
+              key={task.id}
+              className="mb-4 rounded-lg border p-4"
+              style={{
+                backgroundColor: 'color-mix(in srgb, var(--status-redesign) 10%, transparent)',
+                borderColor: 'var(--status-redesign)',
+              }}
+            >
+              <h3 className="text-sm font-medium mb-2" style={{ color: 'var(--status-redesign)' }}>
+                {task.title}
+              </h3>
+
+              {/* Redesign reason / error message */}
+              {task.error_message && (
+                <div className="mb-3">
+                  <span className="text-xs font-medium text-text-secondary">Redesign Reason</span>
+                  <p className="text-sm text-text-primary whitespace-pre-wrap mt-0.5">{task.error_message}</p>
+                </div>
+              )}
+
+              {/* QA feedback history */}
+              {task.qa_feedback_history && task.qa_feedback_history.length > 0 && (
+                <div>
+                  <span className="text-xs font-medium text-text-secondary">
+                    QA History ({task.qa_feedback_history.length} attempt{task.qa_feedback_history.length > 1 ? 's' : ''})
+                  </span>
+                  <div className="mt-1 space-y-1.5 max-h-48 overflow-y-auto">
+                    {task.qa_feedback_history.map((entry, idx) => (
+                      <div key={idx} className="rounded bg-bg-primary/50 p-2 text-xs">
+                        <span className="font-medium text-text-secondary">Attempt {entry.attempt ?? '?'}:</span>{' '}
+                        <span className="text-text-primary">{entry.feedback || entry.error || 'No details'}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
           ))}
 
           {/* Result */}
