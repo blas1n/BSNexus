@@ -789,7 +789,7 @@ async def test_process_escalation_max_auto_redesigns(
     mock_state_machine.transition.assert_not_called()
 
     # Should set intervention flag in Redis
-    mock_stream.redis.set.assert_called_once_with(f"task:{task.id}:needs_intervention", "1")
+    mock_stream.redis.set.assert_called_once_with(f"task:{task.id}:needs_intervention", "1", ex=86400)
 
     # Should publish failure event
     mock_stream.publish_board_event.assert_called_once()
@@ -847,7 +847,7 @@ async def test_process_escalation_llm_error(
     mock_state_machine.transition.assert_not_called()
 
     # Should set intervention flag in Redis
-    mock_stream.redis.set.assert_called_once_with(f"task:{task.id}:needs_intervention", "1")
+    mock_stream.redis.set.assert_called_once_with(f"task:{task.id}:needs_intervention", "1", ex=86400)
 
     # Should publish failure event
     mock_stream.publish_board_event.assert_called_once()
@@ -941,7 +941,7 @@ async def test_process_escalation_environment_error_needs_intervention(
     # No state transition — task stays in redesign
     mock_state_machine.transition.assert_not_called()
     # Should set intervention flag
-    mock_stream.redis.set.assert_called_once_with(f"task:{task.id}:needs_intervention", "1")
+    mock_stream.redis.set.assert_called_once_with(f"task:{task.id}:needs_intervention", "1", ex=86400)
     # Redis counter should not be touched
     mock_stream.redis.incr.assert_not_called()
     # Should publish failure event with environment error reason
@@ -1254,7 +1254,7 @@ async def test_process_escalation_project_not_found(
         await orchestrator._process_escalation(msg, mock_db)
 
     mock_state_machine.transition.assert_not_called()
-    mock_stream.redis.set.assert_called_once_with(f"task:{task.id}:needs_intervention", "1")
+    mock_stream.redis.set.assert_called_once_with(f"task:{task.id}:needs_intervention", "1", ex=86400)
     mock_stream.publish_board_event.assert_called_once()
     assert "Project not found" in mock_stream.publish_board_event.call_args[0][1]["reason"]
 
@@ -1286,7 +1286,7 @@ async def test_process_escalation_phase_not_found(
         await orchestrator._process_escalation(msg, mock_db)
 
     mock_state_machine.transition.assert_not_called()
-    mock_stream.redis.set.assert_called_once_with(f"task:{task.id}:needs_intervention", "1")
+    mock_stream.redis.set.assert_called_once_with(f"task:{task.id}:needs_intervention", "1", ex=86400)
     assert "Phase not found" in mock_stream.publish_board_event.call_args[0][1]["reason"]
 
 

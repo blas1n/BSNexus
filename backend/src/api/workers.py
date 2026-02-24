@@ -331,6 +331,9 @@ async def poll_work(
     for stream, group, source in stream_configs:
         pending = await _xreadgroup_raw(redis_client, stream, group, worker_id_str, "0", count=5)
         for msg_id, data in pending:
+            # QA messages are routed to a specific reviewer — skip if not assigned to this worker
+            if source == "qa" and data.get("reviewer_id") != worker_id_str:
+                continue
             items.append(WorkerPollItem(
                 type=data.get("type", source),
                 message_id=msg_id,
@@ -345,6 +348,9 @@ async def poll_work(
                 redis_client, stream, group, worker_id_str, ">", count=1, block=5000,
             )
             for msg_id, data in new_msgs:
+                # QA messages are routed to a specific reviewer — skip if not assigned to this worker
+                if source == "qa" and data.get("reviewer_id") != worker_id_str:
+                    continue
                 items.append(WorkerPollItem(
                     type=data.get("type", source),
                     message_id=msg_id,

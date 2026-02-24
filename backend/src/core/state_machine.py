@@ -222,6 +222,8 @@ class TaskStateMachine:
                 "project_id": str(task.project_id),
                 "title": task.title,
             }
+            if task.reviewer_id:
+                message["reviewer_id"] = str(task.reviewer_id)
             # Include git metadata for QA reviewers
             if task.branch_name:
                 message["branch_name"] = task.branch_name
