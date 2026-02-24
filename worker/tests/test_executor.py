@@ -70,8 +70,9 @@ class TestClaudeCodeExecutorExecute:
         assert "timed out" in (result.error_message or "").lower()
 
     async def test_execute_calls_claude_cli(self) -> None:
-        """execute() should call 'claude' CLI with correct arguments."""
+        """execute() should call 'claude' CLI with correct arguments via stdin."""
         executor = ClaudeCodeExecutor(workspace_dir="/my/workspace")
+        executor._claude_cmd = "claude"  # override resolved path for test
 
         mock_process = AsyncMock()
         mock_process.returncode = 0
@@ -87,9 +88,9 @@ class TestClaudeCodeExecutorExecute:
         assert call_args[0] == "claude"
         assert "--print" in call_args
         assert "--dangerously-skip-permissions" in call_args
-        assert "-p" in call_args
-        assert "Do something" in call_args
         assert mock_exec.call_args[1]["cwd"] == "/my/workspace"
+        assert mock_exec.call_args[1]["stdin"] == asyncio.subprocess.PIPE
+        mock_process.communicate.assert_awaited_once_with(input=b"Do something")
 
     async def test_execute_workspace_dir_override_from_context(self) -> None:
         """execute() should use workspace_dir from context if provided."""
@@ -164,3 +165,58 @@ class TestClaudeCodeExecutorReview:
 
         assert result.passed is False
         assert result.error_message is not None
+
+
+class TestParseRateLimitWait:
+    def test_detects_hit_your_limit(self) -> None:
+        assert ClaudeCodeExecutor._parse_rate_limit_wait("You've hit your limit") == ClaudeCodeExecutor._RATE_LIMIT_WAIT_SECONDS
+
+    def test_detects_rate_limit(self) -> None:
+        assert ClaudeCodeExecutor._parse_rate_limit_wait("Rate limit exceeded") == ClaudeCodeExecutor._RATE_LIMIT_WAIT_SECONDS
+
+    def test_case_insensitive(self) -> None:
+        assert ClaudeCodeExecutor._parse_rate_limit_wait("RATE LIMIT reached") == ClaudeCodeExecutor._RATE_LIMIT_WAIT_SECONDS
+
+    def test_no_rate_limit(self) -> None:
+        assert ClaudeCodeExecutor._parse_rate_limit_wait("Normal output") is None
+
+    def test_empty_string(self) -> None:
+        assert ClaudeCodeExecutor._parse_rate_limit_wait("") is None
+
+
+class TestParseReviewVerdict:
+    def test_verdict_pass(self) -> None:
+        assert ClaudeCodeExecutor._parse_review_verdict("Review complete\nVERDICT: PASS") is True
+
+    def test_verdict_fail(self) -> None:
+        assert ClaudeCodeExecutor._parse_review_verdict("Issues found\nVERDICT: FAIL - missing tests") is False
+
+    def test_result_pass(self) -> None:
+        assert ClaudeCodeExecutor._parse_review_verdict("RESULT: PASS") is True
+
+    def test_result_fail(self) -> None:
+        assert ClaudeCodeExecutor._parse_review_verdict("RESULT: FAIL") is False
+
+    def test_standalone_pass(self) -> None:
+        assert ClaudeCodeExecutor._parse_review_verdict("PASS - looks good") is True
+
+    def test_standalone_fail(self) -> None:
+        assert ClaudeCodeExecutor._parse_review_verdict("FAIL - broken") is False
+
+    def test_no_verdict_defaults_false(self) -> None:
+        assert ClaudeCodeExecutor._parse_review_verdict("Some review text without verdict") is False
+
+    def test_markdown_formatting_stripped(self) -> None:
+        assert ClaudeCodeExecutor._parse_review_verdict("**VERDICT: PASS**") is True
+
+    def test_bottom_up_search(self) -> None:
+        """Should find the last verdict, not the first."""
+        output = "VERDICT: FAIL\nAfter fixing:\nVERDICT: PASS"
+        assert ClaudeCodeExecutor._parse_review_verdict(output) is True
+
+    def test_no_false_positive_on_passing(self) -> None:
+        """Should not match 'PASSING' or 'FAILED_REASON' as a verdict."""
+        assert ClaudeCodeExecutor._parse_review_verdict("PASSING all tests currently") is False
+
+    def test_no_false_positive_on_failed(self) -> None:
+        assert ClaudeCodeExecutor._parse_review_verdict("FAILED_REASON: timeout") is False
