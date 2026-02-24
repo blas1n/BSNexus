@@ -90,15 +90,49 @@ class TestEnsureBranch:
 class TestCommitTask:
     async def test_commit_task_returns_hash(self, git_ops: WorkerGitOps) -> None:
         """commit_task() should stage, commit, and return the commit hash."""
+
+        async def _side_effect(*args: str) -> str:
+            if args == ("diff", "--cached", "--quiet"):
+                raise RuntimeError("changes exist")  # staged changes exist
+            if args == ("rev-parse", "HEAD"):
+                return "abc123def456"
+            return ""
+
         with patch.object(git_ops, "ensure_branch", new_callable=AsyncMock), \
-             patch.object(git_ops, "_run", new_callable=AsyncMock) as mock_run:
-            mock_run.return_value = "abc123def456"
+             patch.object(git_ops, "_run", new_callable=AsyncMock, side_effect=_side_effect) as mock_run:
             result = await git_ops.commit_task("task-1", "Add login", "phase/auth")
 
         assert result == "abc123def456"
         mock_run.assert_any_await("add", ".")
-        mock_run.assert_any_await("commit", "-m", "feat(task-task-1): Add login", "--allow-empty")
+        mock_run.assert_any_await("commit", "-m", "feat(task-task-1): Add login")
         mock_run.assert_any_await("rev-parse", "HEAD")
+
+    async def test_commit_task_no_changes_returns_empty(self, git_ops: WorkerGitOps) -> None:
+        """commit_task() should return empty string when there are no staged changes."""
+        with patch.object(git_ops, "ensure_branch", new_callable=AsyncMock), \
+             patch.object(git_ops, "_run", new_callable=AsyncMock) as mock_run:
+            # _run returns "" for all calls; diff --cached --quiet succeeds (no changes)
+            mock_run.return_value = ""
+            result = await git_ops.commit_task("task-1", "Add login", "phase/auth")
+
+        assert result == ""
+        mock_run.assert_any_await("add", ".")
+        mock_run.assert_any_await("diff", "--cached", "--quiet")
+
+
+class TestGetStatus:
+    async def test_get_status_calls_git_status_short(self, git_ops: WorkerGitOps) -> None:
+        """get_status() should call git status --short and return output."""
+        with patch.object(git_ops, "_run", new_callable=AsyncMock, return_value="M file.txt") as mock_run:
+            result = await git_ops.get_status()
+        assert result == "M file.txt"
+        mock_run.assert_awaited_once_with("status", "--short")
+
+    async def test_get_status_returns_empty_on_clean(self, git_ops: WorkerGitOps) -> None:
+        """get_status() should return empty string when working tree is clean."""
+        with patch.object(git_ops, "_run", new_callable=AsyncMock, return_value=""):
+            result = await git_ops.get_status()
+        assert result == ""
 
 
 class TestRevertTask:

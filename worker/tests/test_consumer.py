@@ -130,7 +130,10 @@ class TestProcessTask:
     async def test_process_task_with_repo_path_initializes_git(
         self, consumer: TaskConsumer, mock_executor: AsyncMock, agent: WorkerAgent
     ) -> None:
-        """_process_task() should init git repo and set workspace_dir when repo_path is provided."""
+        """_process_task() should init git repo and set workspace_dir when repo_path is provided.
+
+        Note: commit happens in _process_qa, not here.
+        """
         mock_executor.execute.return_value = ExecutionResult(success=True)
 
         data = {
@@ -143,7 +146,6 @@ class TestProcessTask:
 
         with patch("worker.consumer.WorkerGitOps") as MockGitOps:
             mock_git = AsyncMock()
-            mock_git.commit_task = AsyncMock(return_value="abc123hash")
             MockGitOps.return_value = mock_git
 
             await consumer._process_task("msg-git", "task", data)
@@ -154,58 +156,10 @@ class TestProcessTask:
         mock_executor.execute.assert_called_once_with(
             "code", {"task_id": "task-git", "workspace_dir": "/home/worker/project"}
         )
-        mock_git.commit_task.assert_awaited_once_with("task-git", "Add login", "phase/auth")
 
         result = agent.submit_result.call_args[0][0]
-        assert result["commit_hash"] == "abc123hash"
-        assert result["branch_name"] == "phase/auth"
-
-    async def test_process_task_git_commit_failure_does_not_fail_task(
-        self, consumer: TaskConsumer, mock_executor: AsyncMock, agent: WorkerAgent
-    ) -> None:
-        """Git commit failure should not cause the task to fail."""
-        mock_executor.execute.return_value = ExecutionResult(success=True)
-
-        data = {
-            "task_id": "task-gitfail",
-            "worker_prompt": json.dumps({"prompt": "code"}),
-            "repo_path": "/repo",
-            "branch_name": "phase/test",
-            "title": "Test",
-        }
-
-        with patch("worker.consumer.WorkerGitOps") as MockGitOps:
-            mock_git = AsyncMock()
-            mock_git.commit_task = AsyncMock(side_effect=RuntimeError("git failed"))
-            MockGitOps.return_value = mock_git
-
-            await consumer._process_task("msg-gitfail", "task", data)
-
-        result = agent.submit_result.call_args[0][0]
-        assert result["success"] is True
         assert result["commit_hash"] == ""
-
-    async def test_process_task_no_commit_on_failure(
-        self, consumer: TaskConsumer, mock_executor: AsyncMock, agent: WorkerAgent
-    ) -> None:
-        """Should not attempt git commit when execution fails."""
-        mock_executor.execute.return_value = ExecutionResult(success=False, error_message="compile error")
-
-        data = {
-            "task_id": "task-nocommit",
-            "worker_prompt": json.dumps({"prompt": "code"}),
-            "repo_path": "/repo",
-            "branch_name": "phase/test",
-            "title": "Test",
-        }
-
-        with patch("worker.consumer.WorkerGitOps") as MockGitOps:
-            mock_git = AsyncMock()
-            MockGitOps.return_value = mock_git
-
-            await consumer._process_task("msg-nocommit", "task", data)
-
-        mock_git.commit_task.assert_not_awaited()
+        assert result["branch_name"] == "phase/auth"
 
 
 class TestProcessRevert:
@@ -382,3 +336,102 @@ class TestProcessQA:
         mock_executor.review.assert_called_once_with(
             "review", {"task_id": "qa-repo", "workspace_dir": "/home/worker/project"}
         )
+
+    async def test_process_qa_commits_on_pass(
+        self, consumer: TaskConsumer, mock_executor: AsyncMock, agent: WorkerAgent
+    ) -> None:
+        """_process_qa() should commit after QA pass and include commit_hash in result."""
+        mock_executor.review.return_value = ReviewResult(passed=True, feedback="LGTM")
+
+        data = {
+            "task_id": "qa-commit",
+            "qa_prompt": json.dumps({"prompt": "review"}),
+            "repo_path": "/repo",
+            "branch_name": "phase/auth",
+            "title": "Add login",
+        }
+
+        with patch("worker.consumer.WorkerGitOps") as MockGitOps:
+            mock_git = AsyncMock()
+            mock_git.commit_task = AsyncMock(return_value="abc123hash")
+            MockGitOps.return_value = mock_git
+
+            await consumer._process_qa("msg-qa-commit", "qa", data)
+
+        mock_git.commit_task.assert_awaited_once_with("qa-commit", "Add login", "phase/auth")
+        result = agent.submit_result.call_args[0][0]
+        assert result["passed"] is True
+        assert result["commit_hash"] == "abc123hash"
+
+    async def test_process_qa_commit_failure_still_passes(
+        self, consumer: TaskConsumer, mock_executor: AsyncMock, agent: WorkerAgent
+    ) -> None:
+        """_process_qa() should still report QA pass even when commit fails."""
+        mock_executor.review.return_value = ReviewResult(passed=True, feedback="OK")
+
+        data = {
+            "task_id": "qa-commitfail",
+            "qa_prompt": json.dumps({"prompt": "review"}),
+            "repo_path": "/repo",
+            "branch_name": "phase/test",
+            "title": "Test",
+        }
+
+        with patch("worker.consumer.WorkerGitOps") as MockGitOps:
+            mock_git = AsyncMock()
+            mock_git.commit_task = AsyncMock(side_effect=RuntimeError("git failed"))
+            MockGitOps.return_value = mock_git
+
+            await consumer._process_qa("msg-qa-commitfail", "qa", data)
+
+        result = agent.submit_result.call_args[0][0]
+        assert result["passed"] is True
+        assert result["commit_hash"] == ""
+
+    async def test_process_qa_no_changes_still_passes(
+        self, consumer: TaskConsumer, mock_executor: AsyncMock, agent: WorkerAgent
+    ) -> None:
+        """_process_qa() should pass with empty commit_hash when no file changes."""
+        mock_executor.review.return_value = ReviewResult(passed=True, feedback="OK")
+
+        data = {
+            "task_id": "qa-nochanges",
+            "qa_prompt": json.dumps({"prompt": "review"}),
+            "repo_path": "/repo",
+            "branch_name": "phase/test",
+            "title": "Test",
+        }
+
+        with patch("worker.consumer.WorkerGitOps") as MockGitOps:
+            mock_git = AsyncMock()
+            mock_git.commit_task = AsyncMock(return_value="")
+            MockGitOps.return_value = mock_git
+
+            await consumer._process_qa("msg-qa-nochanges", "qa", data)
+
+        result = agent.submit_result.call_args[0][0]
+        assert result["passed"] is True
+        assert result["commit_hash"] == ""
+
+
+class TestClassifyException:
+    def test_classify_environment_exceptions(self) -> None:
+        """_classify_exception should return 'environment' for OS/file errors."""
+        assert TaskConsumer._classify_exception(FileNotFoundError("x")) == "environment"
+        assert TaskConsumer._classify_exception(PermissionError("x")) == "environment"
+        assert TaskConsumer._classify_exception(OSError("x")) == "environment"
+
+    def test_classify_unicode_exceptions(self) -> None:
+        """_classify_exception should return 'environment' for unicode errors."""
+        assert TaskConsumer._classify_exception(
+            UnicodeEncodeError("utf-8", "", 0, 1, "x")
+        ) == "environment"
+        assert TaskConsumer._classify_exception(
+            UnicodeDecodeError("utf-8", b"", 0, 1, "x")
+        ) == "environment"
+
+    def test_classify_other_exceptions(self) -> None:
+        """_classify_exception should return '' for non-environment errors."""
+        assert TaskConsumer._classify_exception(RuntimeError("x")) == ""
+        assert TaskConsumer._classify_exception(ValueError("x")) == ""
+        assert TaskConsumer._classify_exception(KeyError("x")) == ""
