@@ -8,6 +8,7 @@ export interface Worker {
   status: WorkerStatus
   current_task_id: string | null
   executor_type: string
+  project_id: string | null
   registered_at: string
   last_heartbeat: string | null
 }
@@ -32,7 +33,6 @@ export interface RegistrationToken {
   expires_at: string | null
   revoked: boolean
   server_url?: string
-  redis_url?: string
 }
 
 export interface RegistrationTokenCreate {

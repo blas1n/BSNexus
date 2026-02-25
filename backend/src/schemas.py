@@ -29,8 +29,7 @@ class TaskStatus(str, enum.Enum):
     in_progress = "in_progress"
     review = "review"
     done = "done"
-    rejected = "rejected"
-    blocked = "blocked"
+    redesign = "redesign"
 
 
 class TaskPriority(str, enum.Enum):
@@ -159,6 +158,9 @@ class TaskResponse(BaseModel):
     qa_result: Optional[dict] = None
     output_path: Optional[str] = None
     error_message: Optional[str] = None
+    retry_count: int = 0
+    max_retries: int = 3
+    qa_feedback_history: Optional[list[dict]] = None
     version: int
     created_at: datetime
     updated_at: datetime
@@ -176,6 +178,8 @@ class WorkerRegister(BaseModel):
     capabilities: Optional[dict] = None
     executor_type: str = "claude-code"
     registration_token: str
+    worker_id: Optional[str] = None
+    worker_token: Optional[str] = None
 
 
 class WorkerResponse(BaseModel):
@@ -188,6 +192,7 @@ class WorkerResponse(BaseModel):
     status: WorkerStatus
     current_task_id: Optional[uuid.UUID] = None
     executor_type: str
+    project_id: Optional[uuid.UUID] = None
     registered_at: datetime
     last_heartbeat: Optional[datetime] = None
 
@@ -197,6 +202,36 @@ class WorkerHeartbeatResponse(BaseModel):
     pending_tasks: int
 
 
+class WorkerPollRequest(BaseModel):
+    poll_types: list[str] = Field(default=["task", "qa"])
+
+
+class WorkerPollItem(BaseModel):
+    type: str
+    message_id: str
+    stream: str
+    data: dict
+
+
+class WorkerPollResponse(BaseModel):
+    items: list[WorkerPollItem] = Field(default_factory=list)
+
+
+class WorkerResultRequest(BaseModel):
+    message_id: str
+    stream: str
+    result_type: str
+    task_id: str
+    success: bool = False
+    passed: bool = False
+    output_path: str = ""
+    error_message: str = ""
+    error_category: str = ""
+    commit_hash: str = ""
+    branch_name: str = ""
+    feedback: str = ""
+
+
 # ── Board Schemas ─────────────────────────────────────────────────────
 
 
@@ -204,11 +239,19 @@ class BoardColumn(BaseModel):
     tasks: list[TaskResponse]
 
 
+class PhaseInfoResponse(BaseModel):
+    name: str
+    order: int
+    status: PhaseStatus
+
+
 class BoardResponse(BaseModel):
     project_id: uuid.UUID
     columns: dict[str, BoardColumn]
     stats: dict[str, int]
     workers: dict[str, int] = Field(default_factory=dict)
+    phases: dict[str, PhaseInfoResponse] = Field(default_factory=dict)
+    redesign_tasks: list[TaskResponse] = Field(default_factory=list)
 
 
 # ── Common Schemas ────────────────────────────────────────────────────
@@ -250,7 +293,7 @@ class LLMConfigInput(BaseModel):
 
 class CreateSessionRequest(BaseModel):
     name: Optional[str] = None
-    worker_id: Optional[str] = None
+    worker_id: Optional[uuid.UUID] = None
 
 
 class MessageRequest(BaseModel):
@@ -265,12 +308,14 @@ class DesignMessageResponse(BaseModel):
     content: str
     created_at: datetime
     finalize_ready: bool = False
+    design_context: Optional[str] = None
 
 
 class DesignSessionResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: uuid.UUID
     project_id: Optional[uuid.UUID] = None
+    worker_id: Optional[uuid.UUID] = None
     name: Optional[str] = None
     status: DesignSessionStatus
     created_at: datetime
@@ -281,6 +326,21 @@ class DesignSessionResponse(BaseModel):
 class FinalizeRequest(BaseModel):
     repo_path: str
     pm_llm_config: Optional[LLMConfigInput] = None
+
+
+class PhaseRedesignRequest(BaseModel):
+    """Request to trigger manual phase-level redesign."""
+    llm_config: Optional[LLMConfigInput] = None
+
+
+class PhaseRedesignResponse(BaseModel):
+    """Response from phase-level redesign."""
+    phase_id: uuid.UUID
+    project_id: uuid.UUID
+    reasoning: str
+    tasks_kept: int
+    tasks_deleted: int
+    tasks_created: int
 
 
 class AddTaskRequest(BaseModel):
@@ -331,6 +391,21 @@ class GlobalSettingsUpdate(BaseModel):
     llm_base_url: Optional[str] = None
 
 
+# ── Batch Delete Schemas ────────────────────────────────────────────
+
+
+class BatchDeleteRequest(BaseModel):
+    ids: list[uuid.UUID]
+
+
+class BatchDeleteResponse(BaseModel):
+    deleted: int
+
+
+class DeleteResponse(BaseModel):
+    detail: str
+
+
 # ── Registration Token Schemas ──────────────────────────────────────
 
 
@@ -347,3 +422,80 @@ class RegistrationTokenResponse(BaseModel):
     created_at: datetime
     expires_at: Optional[datetime] = None
     revoked: bool
+
+
+# ── Security Schemas ───────────────────────────────────────────────
+
+
+class SecurityFindingResponse(BaseModel):
+    category: str
+    severity: str
+    title: str
+    description: str
+    recommendation: str
+    affected_component: Optional[str] = None
+
+
+class SecurityReportResponse(BaseModel):
+    scan_timestamp: datetime
+    passed: bool
+    summary: dict[str, int]
+    findings: list[SecurityFindingResponse]
+
+
+class AuditLogResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    timestamp: datetime
+    action: str
+    severity: str
+    actor_id: Optional[str] = None
+    actor_type: Optional[str] = None
+    resource_type: Optional[str] = None
+    resource_id: Optional[str] = None
+    ip_address: Optional[str] = None
+    details: Optional[dict] = None
+    request_path: Optional[str] = None
+    request_method: Optional[str] = None
+
+
+class AuditLogListResponse(BaseModel):
+    total: int
+    items: list[AuditLogResponse]
+
+
+class ComplianceReportResponse(BaseModel):
+    generated_at: str
+    frameworks: list[str]
+    overall_status: str
+    summary: dict[str, int]
+    checks: list[dict]
+
+
+class APIKeyCreateRequest(BaseModel):
+    name: str
+    role: str = "viewer"
+    expires_in_days: Optional[int] = None
+
+
+class APIKeyCreateResponse(BaseModel):
+    id: uuid.UUID
+    name: str
+    key: str
+    role: str
+    created_at: datetime
+    expires_at: Optional[datetime] = None
+
+
+class APIKeyResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    key_prefix: str
+    role: str
+    is_active: bool
+    created_at: datetime
+    expires_at: Optional[datetime] = None
+    last_used_at: Optional[datetime] = None

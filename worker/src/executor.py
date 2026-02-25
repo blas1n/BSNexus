@@ -1,5 +1,5 @@
-from worker.src.executors.base import BaseExecutor
-from worker.src.executors.claude_code import ClaudeCodeExecutor
+from worker.executors.base import BaseExecutor
+from worker.executors.claude_code import ClaudeCodeExecutor
 
 EXECUTORS: dict[str, type[BaseExecutor]] = {
     "claude-code": ClaudeCodeExecutor,

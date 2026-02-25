@@ -4,7 +4,6 @@ import { useBoardStore } from '../../stores/boardStore'
 import { Modal, Badge, Button } from '../common'
 
 const allowedTransitions: Partial<Record<TaskStatus, { label: string; to: TaskStatus }[]>> = {
-  rejected: [{ label: 'Retry', to: 'ready' }],
   ready: [{ label: 'Queue', to: 'queued' }],
 }
 
@@ -14,7 +13,7 @@ interface Props {
 }
 
 export default function TaskDetail({ task, onClose }: Props) {
-  const { moveTask, updateTask } = useBoardStore()
+  const { moveTask, updateTask, phases } = useBoardStore()
   const transitions = allowedTransitions[task.status] || []
 
   const handleTransition = async (to: TaskStatus) => {
@@ -30,6 +29,10 @@ export default function TaskDetail({ task, onClose }: Props) {
       // Error handling
     }
   }
+
+  const phaseInfo = phases[task.phase_id]
+  const phaseLabel = phaseInfo ? `Phase ${phaseInfo.order} — ${phaseInfo.name}` : `Phase ${task.phase_id.slice(0, 8)}`
+  const showCommit = ['review', 'done'].includes(task.status) && task.commit_hash
 
   const footer = transitions.length > 0 ? (
     <>
@@ -66,25 +69,19 @@ export default function TaskDetail({ task, onClose }: Props) {
       {/* Details grid */}
       <div className="mb-4 grid grid-cols-2 gap-3 text-sm">
         <div>
-          <span className="text-text-secondary">Phase ID</span>
-          <p className="text-text-primary truncate">{task.phase_id}</p>
+          <span className="text-text-secondary">Phase</span>
+          <p className="text-text-primary truncate">{phaseLabel}</p>
         </div>
-        {task.worker_id && (
-          <div>
-            <span className="text-text-secondary">Worker</span>
-            <p className="text-text-primary truncate">{task.worker_id}</p>
-          </div>
-        )}
-        {task.reviewer_id && (
-          <div>
-            <span className="text-text-secondary">Reviewer</span>
-            <p className="text-text-primary truncate">{task.reviewer_id}</p>
-          </div>
-        )}
         {task.branch_name && (
           <div>
             <span className="text-text-secondary">Branch</span>
             <p className="text-text-primary truncate">{task.branch_name}</p>
+          </div>
+        )}
+        {showCommit && (
+          <div>
+            <span className="text-text-secondary">Commit</span>
+            <p className="text-text-primary font-mono">{task.commit_hash!.slice(0, 8)}</p>
           </div>
         )}
         <div>
@@ -119,18 +116,37 @@ export default function TaskDetail({ task, onClose }: Props) {
         </div>
       )}
 
+      {/* Retry info */}
+      {task.retry_count > 0 && (
+        <div className="mb-4">
+          <h3 className="text-sm font-medium text-text-secondary mb-1">
+            Retries ({task.retry_count}/{task.max_retries})
+          </h3>
+          {task.qa_feedback_history && task.qa_feedback_history.length > 0 && (
+            <div className="space-y-2 max-h-48 overflow-y-auto">
+              {task.qa_feedback_history.map((entry, idx) => (
+                <div key={idx} className="rounded bg-bg-elevated p-2 text-xs">
+                  <span className="font-medium">Attempt {String(entry.attempt)}:</span>{' '}
+                  {String(entry.feedback || entry.error || 'No details')}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Error message */}
       {task.error_message && (
         <div
           className="mb-4 rounded-md border p-3"
           style={{
-            backgroundColor: 'color-mix(in srgb, var(--status-rejected) 10%, transparent)',
-            borderColor: 'var(--status-rejected)',
+            backgroundColor: 'color-mix(in srgb, var(--status-redesign) 10%, transparent)',
+            borderColor: 'var(--status-redesign)',
           }}
         >
           <h3
             className="text-sm font-medium mb-1"
-            style={{ color: 'var(--status-rejected)' }}
+            style={{ color: 'var(--status-redesign)' }}
           >
             Error
           </h3>

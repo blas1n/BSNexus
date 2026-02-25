@@ -13,17 +13,12 @@ else
     echo "[OK] Git safe directory already configured"
 fi
 
-# 1. Install uv (fast Python package installer)
-echo "Installing uv..."
-if ! command -v uv &> /dev/null; then
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    # Add uv to PATH immediately
-    export PATH="$HOME/.local/bin:$PATH"
+# 1. Ensure uv is on PATH (installed in Dockerfile)
+export PATH="$HOME/.local/bin:$PATH"
+if ! grep -q 'export PATH="$HOME/.local/bin:$PATH"' ~/.bashrc; then
     echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
-    echo "[OK] uv installed successfully"
-else
-    echo "[OK] uv already installed"
 fi
+echo "[OK] uv available: $(uv --version)"
 
 # 2. Create virtual environment if it doesn't exist
 if [ ! -d ".venv" ]; then

@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 
 from backend.src import models
 from backend.src.core.orchestrator import PMOrchestrator
 from backend.src.core.state_machine import TaskStateMachine
+from backend.src.repositories.phase_repository import PhaseRepository
 from backend.src.repositories.task_repository import TaskRepository
 from backend.src.storage.database import async_session, get_db
 from backend.src.utils.worker_registry import WorkerRegistry
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/pm", tags=["pm"])
 
@@ -64,11 +68,21 @@ async def start_orchestration(
 
     task = asyncio.create_task(orchestrator.start(project_id, async_session))
 
-    orchestrators[pid] = {
+    entry = {
         "orchestrator": orchestrator,
         "task": task,
         "running": True,
     }
+    orchestrators[pid] = entry
+
+    def _on_orchestrator_done(fut: asyncio.Task[None]) -> None:
+        entry["running"] = False
+        if fut.cancelled():
+            logger.warning("Orchestrator task cancelled for project %s", pid)
+        elif fut.exception() is not None:
+            logger.error("Orchestrator task crashed for project %s: %s", pid, fut.exception(), exc_info=fut.exception())
+
+    task.add_done_callback(_on_orchestrator_done)
 
     return {"detail": "Orchestration started", "project_id": pid}
 
@@ -135,14 +149,20 @@ async def promote_waiting_tasks(
     project_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Promote WAITING tasks with all dependencies met (or none) to READY."""
-    repo = TaskRepository(db)
+    """Promote WAITING tasks in the active phase with all dependencies met to READY."""
+    phase_repo = PhaseRepository(db)
+    task_repo = TaskRepository(db)
     state_machine = TaskStateMachine()
-    waiting_tasks = await repo.list_by_project(project_id, status=models.TaskStatus.waiting, limit=500)
+
+    active_phase = await phase_repo.get_active_phase(project_id)
+    if active_phase is None:
+        return {"detail": "No active phase", "promoted": []}
+
+    waiting_tasks = await task_repo.list_waiting_in_phase(active_phase.id)
 
     promoted: list[dict] = []
     for task in waiting_tasks:
-        if await repo.check_dependencies_met(task.id):
+        if await task_repo.check_dependencies_met(task.id):
             await state_machine.transition(
                 task=task,
                 new_status=models.TaskStatus.ready,

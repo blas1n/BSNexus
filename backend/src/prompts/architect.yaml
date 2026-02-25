@@ -69,6 +69,15 @@ finalize: |
 
   {design_context}
 
+  ## Important Rules
+  - The FIRST task of Phase 1 MUST be "Project Setup" — initialize the project with
+    proper .gitignore, README.md, and any scaffolding required by the tech stack
+    (e.g. package.json, pyproject.toml, directory structure).
+    This task must have NO dependencies and all other tasks in Phase 1 must depend on it
+    (directly or transitively via depends_on_indices).
+  - The .gitignore in the setup task must match the chosen tech stack (e.g. node_modules/
+    and dist/ for Node.js, __pycache__/ and .venv/ for Python, etc).
+
   Return JSON in this exact format:
   {{
     "project_name": "...",
@@ -104,4 +113,49 @@ add_task: |
     "priority": "high|medium|low|critical",
     "worker_prompt": "Detailed instructions for the coding agent...",
     "qa_prompt": "Review checklist for the code reviewer..."
+  }}
+
+phase_redesign: |
+  A task in the current phase has repeatedly failed execution or QA review.
+  You must redesign the **entire set of incomplete tasks** in this phase to resolve the issue.
+
+  ## Failed Task (trigger for redesign)
+  - **Title**: {failed_task_title}
+  - **Error**: {failed_task_error}
+  - **Failure History**: {failed_task_history}
+
+  ## Completed Tasks (reference only, do NOT modify)
+  {done_tasks}
+
+  ## Incomplete Tasks (you must redesign these)
+  {incomplete_tasks}
+
+  ## Phase Info
+  - **Phase Name**: {phase_name}
+  - **Branch**: {branch_name}
+
+  ## Instructions
+  - Analyze why the failed task keeps failing across all retry attempts.
+  - Return a new list of tasks for this phase that resolves the issue.
+  - You may keep, modify, remove, or add tasks as needed.
+  - For kept/modified tasks, include the original task `id` so the system can match them.
+  - For new tasks, omit the `id` field.
+  - Tasks that are NOT in your output will be deleted from the project.
+  - Set `depends_on` to a list of task IDs (existing UUIDs) or titles (for new tasks) to define execution order.
+  - Each task must have a `worker_prompt` (instructions for the coding agent) and `qa_prompt` (review checklist).
+
+  Return JSON in this exact format:
+  {{
+    "reasoning": "Brief explanation of the redesign decisions",
+    "tasks": [
+      {{
+        "id": "existing-uuid-if-kept-or-modified",
+        "title": "Task title",
+        "description": "Task description",
+        "priority": "high|medium|low|critical",
+        "worker_prompt": "Detailed instructions for the coding agent",
+        "qa_prompt": "Review checklist for the code reviewer",
+        "depends_on": []
+      }}
+    ]
   }}

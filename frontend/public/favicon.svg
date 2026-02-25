@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="12 16 100 96">
+  <!-- Dashed circle -->
+  <circle cx="64" cy="64" r="40" fill="none" stroke="#888" stroke-width="3" stroke-dasharray="8 4"/>
+
+  <!-- Connection lines from center area to nodes -->
+  <line x1="36" y1="32" x2="48" y2="45" stroke="#aaa" stroke-width="2"/>
+  <line x1="92" y1="32" x2="80" y2="45" stroke="#aaa" stroke-width="2"/>
+  <line x1="28" y1="76" x2="44" y2="70" stroke="#aaa" stroke-width="2"/>
+  <line x1="100" y1="76" x2="84" y2="70" stroke="#aaa" stroke-width="2"/>
+  <line x1="72" y1="100" x2="72" y2="82" stroke="#aaa" stroke-width="2"/>
+
+  <!-- BS text -->
+  <text x="64" y="72" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-weight="bold" font-size="30" fill="#555" letter-spacing="-1">BS</text>
+
+  <!-- Node: top-left (green) -->
+  <rect x="26" y="22" width="13" height="13" rx="2" fill="none" stroke="#6aab3d" stroke-width="3"/>
+
+  <!-- Node: top-right (green) -->
+  <rect x="84" y="22" width="13" height="13" rx="2" fill="none" stroke="#4a8c3f" stroke-width="3"/>
+
+  <!-- Node: left (orange) -->
+  <rect x="18" y="68" width="13" height="13" rx="2" fill="none" stroke="#e0822a" stroke-width="3"/>
+
+  <!-- Node: right (blue) -->
+  <rect x="94" y="68" width="13" height="13" rx="2" fill="none" stroke="#4285c4" stroke-width="3"/>
+
+  <!-- Node: bottom (yellow) -->
+  <rect x="66" y="94" width="13" height="13" rx="2" fill="none" stroke="#c4a934" stroke-width="3"/>
+</svg>

@@ -2,15 +2,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from worker.src.agent import WorkerAgent
-from worker.src.config import WorkerConfig
+from worker.agent import WorkerAgent
+from worker.config import WorkerConfig
 
 
 @pytest.fixture
 def config() -> WorkerConfig:
     return WorkerConfig(
         server_url="http://test-server:8000",
-        redis_url="redis://localhost:6379",
         executor_type="claude-code",
         heartbeat_interval=1,
     )
@@ -26,6 +25,7 @@ def _make_register_response() -> dict:
         "worker_id": "test-worker-id-123",
         "token": "test-token-abc",
         "heartbeat_interval": 30,
+        "poll_interval": 2,
         "streams": {
             "tasks_queue": "tasks:queue",
             "tasks_results": "tasks:results",
@@ -40,7 +40,7 @@ def _make_register_response() -> dict:
 
 class TestWorkerAgentRegister:
     async def test_register_sets_worker_id_and_token(self, agent: WorkerAgent) -> None:
-        """register() should set worker_id, token, streams, and consumer_groups."""
+        """register() should set worker_id and token."""
         mock_response = MagicMock()
         mock_response.json.return_value = _make_register_response()
         mock_response.raise_for_status = MagicMock()
@@ -50,20 +50,12 @@ class TestWorkerAgentRegister:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("worker.src.agent.httpx.AsyncClient", return_value=mock_client):
+        with patch("worker.agent.httpx.AsyncClient", return_value=mock_client):
             await agent.register()
 
         assert agent.worker_id == "test-worker-id-123"
         assert agent.token == "test-token-abc"
-        assert agent.streams == {
-            "tasks_queue": "tasks:queue",
-            "tasks_results": "tasks:results",
-            "tasks_qa": "tasks:qa",
-        }
-        assert agent.consumer_groups == {
-            "workers": "workers",
-            "reviewers": "reviewers",
-        }
+        assert agent.config.poll_interval == 2
 
     async def test_register_sends_correct_payload(self, agent: WorkerAgent) -> None:
         """register() should POST to /api/workers/register with expected payload."""
@@ -76,7 +68,7 @@ class TestWorkerAgentRegister:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("worker.src.agent.httpx.AsyncClient", return_value=mock_client):
+        with patch("worker.agent.httpx.AsyncClient", return_value=mock_client):
             await agent.register()
 
         call_args = mock_client.post.call_args
@@ -112,8 +104,8 @@ class TestWorkerAgentHeartbeat:
             await original_sleep(0)
 
         with (
-            patch("worker.src.agent.httpx.AsyncClient", return_value=mock_client),
-            patch("worker.src.agent.asyncio.sleep", side_effect=fake_sleep),
+            patch("worker.agent.httpx.AsyncClient", return_value=mock_client),
+            patch("worker.agent.asyncio.sleep", side_effect=fake_sleep),
         ):
             await agent.heartbeat_loop()
 
@@ -151,8 +143,8 @@ class TestWorkerAgentHeartbeat:
             await original_sleep(0)
 
         with (
-            patch("worker.src.agent.httpx.AsyncClient", return_value=mock_client),
-            patch("worker.src.agent.asyncio.sleep", side_effect=fake_sleep),
+            patch("worker.agent.httpx.AsyncClient", return_value=mock_client),
+            patch("worker.agent.asyncio.sleep", side_effect=fake_sleep),
         ):
             await agent.heartbeat_loop()
 
@@ -170,13 +162,13 @@ class TestWorkerAgentCapabilities:
 
     def test_detect_capabilities_includes_docker(self, agent: WorkerAgent) -> None:
         """_detect_capabilities() should include 'docker' when /.dockerenv exists."""
-        with patch("worker.src.agent.Path.exists", return_value=True):
+        with patch("worker.agent.Path.exists", return_value=True):
             capabilities = agent._detect_capabilities()
         assert "docker" in capabilities
 
     def test_detect_capabilities_no_docker(self, agent: WorkerAgent) -> None:
         """_detect_capabilities() should not include 'docker' when /.dockerenv does not exist."""
-        with patch("worker.src.agent.Path.exists", return_value=False):
+        with patch("worker.agent.Path.exists", return_value=False):
             capabilities = agent._detect_capabilities()
         # native is always there; docker/devcontainer may not be
         assert "native" in capabilities
@@ -194,7 +186,7 @@ class TestWorkerAgentShutdown:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("worker.src.agent.httpx.AsyncClient", return_value=mock_client):
+        with patch("worker.agent.httpx.AsyncClient", return_value=mock_client):
             await agent.shutdown()
 
         assert agent._running is False
@@ -209,7 +201,7 @@ class TestWorkerAgentShutdown:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("worker.src.agent.httpx.AsyncClient", return_value=mock_client):
+        with patch("worker.agent.httpx.AsyncClient", return_value=mock_client):
             await agent.shutdown()
 
         mock_client.delete.assert_called_once()
@@ -225,8 +217,108 @@ class TestWorkerAgentShutdown:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("worker.src.agent.httpx.AsyncClient", return_value=mock_client):
+        with patch("worker.agent.httpx.AsyncClient", return_value=mock_client):
             await agent.shutdown()
 
         assert agent._running is False
         mock_client.delete.assert_not_called()
+
+
+class TestWorkerAgentPoll:
+    async def test_poll_sends_correct_request(self, agent: WorkerAgent) -> None:
+        """poll() should POST to /api/v1/workers/{id}/poll with auth and poll_types."""
+        agent.worker_id = "test-worker-id"
+        agent.token = "test-token"
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"items": [{"type": "task", "message_id": "m1", "stream": "task", "data": {}}]}
+        mock_response.raise_for_status = MagicMock()
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("worker.agent.httpx.AsyncClient", return_value=mock_client):
+            items = await agent.poll()
+
+        assert len(items) == 1
+        assert items[0]["type"] == "task"
+        call_args = mock_client.post.call_args
+        assert "test-worker-id/poll" in call_args[0][0]
+        assert call_args[1]["headers"]["Authorization"] == "Bearer test-token"
+        assert call_args[1]["json"]["poll_types"] == ["task", "qa"]
+
+    async def test_poll_returns_empty_list(self, agent: WorkerAgent) -> None:
+        """poll() should return empty list when no work available."""
+        agent.worker_id = "test-worker-id"
+        agent.token = "test-token"
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"items": []}
+        mock_response.raise_for_status = MagicMock()
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("worker.agent.httpx.AsyncClient", return_value=mock_client):
+            items = await agent.poll()
+
+        assert items == []
+
+
+class TestWorkerAgentSubmitResult:
+    async def test_submit_result_sends_correct_request(self, agent: WorkerAgent) -> None:
+        """submit_result() should POST to /api/v1/workers/{id}/result with auth."""
+        agent.worker_id = "test-worker-id"
+        agent.token = "test-token"
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        result_data = {
+            "message_id": "msg-1",
+            "stream": "task",
+            "result_type": "execution",
+            "task_id": "t1",
+            "success": True,
+        }
+
+        with patch("worker.agent.httpx.AsyncClient", return_value=mock_client):
+            await agent.submit_result(result_data)
+
+        call_args = mock_client.post.call_args
+        assert "test-worker-id/result" in call_args[0][0]
+        assert call_args[1]["headers"]["Authorization"] == "Bearer test-token"
+        assert call_args[1]["json"] == result_data
+
+    async def test_submit_result_retries_on_failure(self, agent: WorkerAgent) -> None:
+        """submit_result() should retry up to 3 times on failure."""
+        agent.worker_id = "test-worker-id"
+        agent.token = "test-token"
+
+        mock_response_ok = MagicMock()
+        mock_response_ok.raise_for_status = MagicMock()
+
+        mock_response_fail = MagicMock()
+        mock_response_fail.raise_for_status = MagicMock(side_effect=Exception("HTTP 500"))
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(side_effect=[mock_response_fail, mock_response_ok])
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch("worker.agent.httpx.AsyncClient", return_value=mock_client),
+            patch("worker.agent.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            await agent.submit_result({"message_id": "m", "stream": "task", "result_type": "execution", "task_id": "t"})
+
+        assert mock_client.post.call_count == 2

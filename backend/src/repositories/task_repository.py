@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from typing import Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import selectinload
 
 from backend.src.models import Task, TaskPriority, TaskStatus, task_dependencies
@@ -132,16 +132,6 @@ class TaskRepository(BaseRepository):
         )
         return list(result.scalars().all())
 
-    async def find_blocked_dependents(self, task_id: uuid.UUID) -> list[Task]:
-        """Find BLOCKED tasks that depend on the given task."""
-        result = await self.db.execute(
-            select(Task).where(
-                Task.id.in_(select(task_dependencies.c.task_id).where(task_dependencies.c.dependency_id == task_id)),
-                Task.status == TaskStatus.blocked,
-            )
-        )
-        return list(result.scalars().all())
-
     async def count_by_status(self, project_id: uuid.UUID) -> dict[str, int]:
         """Count tasks grouped by status for a project."""
         result = await self.db.execute(
@@ -164,4 +154,55 @@ class TaskRepository(BaseRepository):
         tasks = list(result.scalars().all())
         tasks.sort(key=lambda t: PRIORITY_ORDER.get(t.priority, 99))
         return tasks
+
+    async def count_active_tasks(self, project_id: uuid.UUID) -> int:
+        """Count tasks in queued, in_progress, or review status for a project."""
+        active_statuses = [TaskStatus.queued, TaskStatus.in_progress, TaskStatus.review]
+        result = await self.db.execute(
+            select(func.count(Task.id)).where(Task.project_id == project_id, Task.status.in_(active_statuses))
+        )
+        return result.scalar_one()
+
+    async def list_waiting_in_phase(self, phase_id: uuid.UUID) -> list[Task]:
+        """Get waiting tasks within a specific phase."""
+        result = await self.db.execute(
+            select(Task).where(Task.phase_id == phase_id, Task.status == TaskStatus.waiting)
+        )
+        return list(result.scalars().all())
+
+    async def list_incomplete_in_phase(self, phase_id: uuid.UUID) -> list[Task]:
+        """Get all incomplete (non-done) tasks within a phase."""
+        result = await self.db.execute(
+            select(Task)
+            .where(Task.phase_id == phase_id, Task.status != TaskStatus.done)
+            .options(selectinload(Task.depends_on))
+        )
+        return list(result.scalars().all())
+
+    async def list_done_in_phase(self, phase_id: uuid.UUID) -> list[Task]:
+        """Get all done tasks within a phase."""
+        result = await self.db.execute(
+            select(Task).where(Task.phase_id == phase_id, Task.status == TaskStatus.done)
+        )
+        return list(result.scalars().all())
+
+    async def hard_delete(self, task_id: uuid.UUID) -> None:
+        """Permanently delete a task and its dependencies/history (CASCADE)."""
+        await self.db.execute(delete(Task).where(Task.id == task_id))
+
+    async def hard_delete_many(self, task_ids: list[uuid.UUID]) -> int:
+        """Permanently delete multiple tasks. Returns count deleted."""
+        if not task_ids:
+            return 0
+        result = await self.db.execute(delete(Task).where(Task.id.in_(task_ids)))
+        return result.rowcount or 0
+
+    async def clear_dependencies(self, task_id: uuid.UUID) -> None:
+        """Remove all dependency relationships for a task (both directions)."""
+        await self.db.execute(
+            task_dependencies.delete().where(task_dependencies.c.task_id == task_id)
+        )
+        await self.db.execute(
+            task_dependencies.delete().where(task_dependencies.c.dependency_id == task_id)
+        )
 

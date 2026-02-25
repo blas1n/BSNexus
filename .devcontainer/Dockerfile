@@ -45,6 +45,13 @@ RUN mkdir -p /workspace /home/$USERNAME/.claude && \
 # Set up non-root user
 USER $USERNAME
 
+# Install uv (fast Python package manager)
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH=/home/$USERNAME/.local/bin:$PATH
+
+# Install pnpm
+RUN npm install -g pnpm
+
 # Install Claude Code
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 

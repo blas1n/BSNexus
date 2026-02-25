@@ -7,7 +7,7 @@ import { useThemeStore } from '../../stores/themeStore'
 const navItems = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/architect', label: 'Architect', icon: Bot },
-  { to: '/board', label: 'Board', icon: Kanban },
+  { to: '/board', label: 'Board', icon: Kanban, showOnlyWhenActive: true },
   { to: '/workers', label: 'Workers', icon: Users },
 ]
 
@@ -43,7 +43,7 @@ export default function Sidebar() {
 
       {/* Navigation */}
       <nav className="flex flex-col gap-1 px-3">
-        {navItems.map((item) => {
+        {navItems.filter((item) => !item.showOnlyWhenActive || isActive(item.to)).map((item) => {
           const Icon = item.icon
           const active = isActive(item.to)
 

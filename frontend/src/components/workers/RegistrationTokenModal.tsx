@@ -23,7 +23,6 @@ export default function RegistrationTokenModal({ open, onClose }: RegistrationTo
 function RegistrationTokenContent() {
   const [token, setToken] = useState<string | null>(null)
   const [serverUrl, setServerUrl] = useState<string | null>(null)
-  const [redisUrl, setRedisUrl] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
@@ -34,14 +33,13 @@ function RegistrationTokenContent() {
       .then((res) => {
         setToken(res.token)
         setServerUrl(res.server_url ?? null)
-        setRedisUrl(res.redis_url ?? null)
       })
       .catch(() => setError('Failed to create registration token'))
       .finally(() => setLoading(false))
   }, [])
 
   const command = token
-    ? `bsnexus-worker register \\\n  --url ${serverUrl ?? 'http://<SERVER_HOST>:8000'} \\\n  --token ${token} \\\n  --redis-url ${redisUrl ?? 'redis://localhost:6379'} \\\n  --executor claude-code`
+    ? `bsnexus-worker register \\\n  --url ${serverUrl ?? 'http://<SERVER_HOST>:8000'} \\\n  --token ${token} \\\n  --executor claude-code`
     : ''
 
   const handleCopy = useCallback(async () => {

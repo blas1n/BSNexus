@@ -1,11 +1,15 @@
 """Integration tests for full end-to-end workflows."""
 from __future__ import annotations
 
+import uuid as uuid_mod
 from unittest.mock import AsyncMock, MagicMock
 
 from httpx import AsyncClient
+from sqlalchemy import update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.src.main import app
+from backend.src.models import Phase, PhaseStatus
 
 
 # -- Helpers -------------------------------------------------------------------
@@ -47,6 +51,14 @@ async def _create_phase(client: AsyncClient, project_id: str) -> dict:
     return response.json()
 
 
+async def _activate_phase(db_session: AsyncSession, phase_id: str) -> None:
+    """Set a phase to active status directly in the database."""
+    await db_session.execute(
+        update(Phase).where(Phase.id == uuid_mod.UUID(phase_id)).values(status=PhaseStatus.active)
+    )
+    await db_session.flush()
+
+
 async def _create_task(
     client: AsyncClient,
     project_id: str,
@@ -86,7 +98,7 @@ async def _transition_task(client: AsyncClient, task_id: str, new_status: str, a
 # -- Tests ---------------------------------------------------------------------
 
 
-async def test_project_lifecycle(client: AsyncClient):
+async def test_project_lifecycle(client: AsyncClient, db_session: AsyncSession):
     """Full lifecycle: project -> phase -> task -> transitions through done."""
     # 1. Create project
     project = await _create_project(client)
@@ -109,12 +121,15 @@ async def test_project_lifecycle(client: AsyncClient):
     assert phase["project_id"] == project["id"]
     assert phase["status"] == "pending"
 
-    # 5. Create task (no deps -> starts as ready)
+    # 5. Activate phase (required for tasks to start as ready)
+    await _activate_phase(db_session, phase["id"])
+
+    # 6. Create task (no deps + active phase -> starts as ready)
     task = await _create_task(client, project["id"], phase["id"], "Lifecycle Task")
     assert task["status"] == "ready"
     assert task["version"] == 1
 
-    # 6. Transition through full lifecycle: ready -> queued -> in_progress -> review -> done
+    # 7. Transition through full lifecycle: ready -> queued -> in_progress -> review -> done
     transition = await _transition_task(client, task["id"], "queued")
     assert transition["status"] == "queued"
     assert transition["previous_status"] == "ready"
@@ -131,7 +146,7 @@ async def test_project_lifecycle(client: AsyncClient):
     assert transition["status"] == "done"
     assert transition["previous_status"] == "review"
 
-    # 7. Verify final task state
+    # 8. Verify final task state
     final_resp = await client.get(f"/api/v1/tasks/{task['id']}")
     assert final_resp.status_code == 200
     final_task = final_resp.json()
@@ -139,12 +154,13 @@ async def test_project_lifecycle(client: AsyncClient):
     assert final_task["version"] == 5  # initial 1 + 4 transitions
 
 
-async def test_dependency_chain(client: AsyncClient):
+async def test_dependency_chain(client: AsyncClient, db_session: AsyncSession):
     """Create tasks A, B (depends on A), C (depends on B). Verify dependency promotion."""
     project = await _create_project(client)
     phase = await _create_phase(client, project["id"])
+    await _activate_phase(db_session, phase["id"])
 
-    # Create Task A (no deps -> ready)
+    # Create Task A (no deps + active phase -> ready)
     task_a = await _create_task(client, project["id"], phase["id"], "Task A")
     assert task_a["status"] == "ready"
 
@@ -184,7 +200,7 @@ async def test_dependency_chain(client: AsyncClient):
     assert task_c_resp.json()["status"] == "ready"
 
 
-async def test_board_snapshot(client: AsyncClient, db_session, mock_stream_manager):
+async def test_board_snapshot(client: AsyncClient, db_session: AsyncSession, mock_stream_manager):
     """Create project with tasks in different states, verify board endpoint returns correct structure."""
     # Board endpoint requires app.state.redis, so we need to set a mock
     mock_redis = AsyncMock()
@@ -194,8 +210,9 @@ async def test_board_snapshot(client: AsyncClient, db_session, mock_stream_manag
 
     project = await _create_project(client)
     phase = await _create_phase(client, project["id"])
+    await _activate_phase(db_session, phase["id"])
 
-    # Create task in ready state (no deps)
+    # Create task in ready state (no deps + active phase)
     task_ready = await _create_task(client, project["id"], phase["id"], "Ready Task")
     assert task_ready["status"] == "ready"
 

@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+import os
+
+os.environ.setdefault("TESTING", "1")
+
+from unittest.mock import AsyncMock, patch
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -9,6 +13,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from backend.src.main import app
 from backend.src.storage.database import Base, get_db
+
+# Import models so Base.metadata.create_all picks them up.
+# Security models (audit_logger, access_control, compliance) are loaded
+# transitively via main.py -> security router imports.
+import backend.src.models  # noqa: F401
 
 TEST_DATABASE_URL = "sqlite+aiosqlite://"
 
@@ -34,11 +43,21 @@ async def db_engine():
 
 
 @pytest_asyncio.fixture
-async def db_session(db_engine):
-    """Create a test database session."""
-    session_maker = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
-    async with session_maker() as session:
-        yield session
+async def test_session_maker(db_engine):
+    """Create a session maker bound to the test database engine."""
+    return async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+
+
+@pytest_asyncio.fixture
+async def db_session(test_session_maker):
+    """Create a test database session.
+
+    Also patches async_session in the architect module so that
+    finalize_design's fresh-session write scope uses the test DB.
+    """
+    with patch("backend.src.api.architect.async_session", test_session_maker):
+        async with test_session_maker() as session:
+            yield session
 
 
 @pytest_asyncio.fixture
@@ -59,6 +78,12 @@ async def client(db_session, mock_stream_manager):
 
     app.dependency_overrides[get_db] = override_get_db
     app.state.stream_manager = mock_stream_manager
+
+    # Disable rate limiting in tests to prevent cross-test interference
+    app.state.rate_limit_disabled = True
+
+    # NOTE: async_session is already patched via the db_session fixture,
+    # so finalize_design's fresh-session write scope uses the test DB.
 
     async with AsyncClient(
         transport=ASGITransport(app=app),

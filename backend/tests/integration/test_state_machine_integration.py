@@ -1,14 +1,20 @@
 """Integration tests for state machine transitions via the API."""
 from __future__ import annotations
 
+import uuid as uuid_mod
+
 from httpx import AsyncClient
+from sqlalchemy import update
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from backend.src.models import Phase, PhaseStatus
 
 
 # -- Helpers -------------------------------------------------------------------
 
 
-async def _create_project_and_phase(client: AsyncClient) -> tuple[str, str]:
-    """Create a project and phase, return (project_id, phase_id)."""
+async def _create_project_and_phase(client: AsyncClient, db_session: AsyncSession) -> tuple[str, str]:
+    """Create a project and an active phase, return (project_id, phase_id)."""
     project_resp = await client.post(
         "/api/v1/projects",
         json={
@@ -30,6 +36,12 @@ async def _create_project_and_phase(client: AsyncClient) -> tuple[str, str]:
     )
     assert phase_resp.status_code == 201
     phase_id = phase_resp.json()["id"]
+
+    # Activate the phase so tasks can start as ready
+    await db_session.execute(
+        update(Phase).where(Phase.id == uuid_mod.UUID(phase_id)).values(status=PhaseStatus.active)
+    )
+    await db_session.flush()
 
     return project_id, phase_id
 
@@ -62,9 +74,9 @@ async def _create_task(
 # -- Tests ---------------------------------------------------------------------
 
 
-async def test_invalid_transition_rejected(client: AsyncClient):
+async def test_invalid_transition_rejected(client: AsyncClient, db_session: AsyncSession):
     """Try invalid transitions and verify 400 response."""
-    project_id, phase_id = await _create_project_and_phase(client)
+    project_id, phase_id = await _create_project_and_phase(client, db_session)
 
     # Create a task that starts as waiting (has a dependency)
     dep_task = await _create_task(client, project_id, phase_id, "Dep Task")
@@ -99,9 +111,9 @@ async def test_invalid_transition_rejected(client: AsyncClient):
     assert "Invalid transition" in response.json()["detail"]
 
 
-async def test_optimistic_locking_conflict(client: AsyncClient):
+async def test_optimistic_locking_conflict(client: AsyncClient, db_session: AsyncSession):
     """Create task, transition with wrong expected_version, verify 409 response."""
-    project_id, phase_id = await _create_project_and_phase(client)
+    project_id, phase_id = await _create_project_and_phase(client, db_session)
     task = await _create_task(client, project_id, phase_id, "Locking Task")
     assert task["version"] == 1
 
@@ -140,13 +152,13 @@ async def test_optimistic_locking_conflict(client: AsyncClient):
     assert "Version conflict" in response.json()["detail"]
 
 
-async def test_rejected_to_ready_retry(client: AsyncClient):
-    """Create task, move to rejected, then retry back to ready."""
-    project_id, phase_id = await _create_project_and_phase(client)
+async def test_execution_failure_auto_retry_via_api(client: AsyncClient, db_session: AsyncSession):
+    """Test the in_progress -> ready transition for execution failure auto-retry."""
+    project_id, phase_id = await _create_project_and_phase(client, db_session)
     task = await _create_task(client, project_id, phase_id, "Retry Task")
     assert task["status"] == "ready"
 
-    # Move through: ready -> queued -> in_progress -> rejected
+    # Move to: ready -> queued -> in_progress
     await client.post(
         f"/api/v1/tasks/{task['id']}/transition",
         json={"new_status": "queued", "actor": "test"},
@@ -155,26 +167,14 @@ async def test_rejected_to_ready_retry(client: AsyncClient):
         f"/api/v1/tasks/{task['id']}/transition",
         json={"new_status": "in_progress", "actor": "test"},
     )
-    reject_resp = await client.post(
-        f"/api/v1/tasks/{task['id']}/transition",
-        json={"new_status": "rejected", "actor": "test", "reason": "needs rework"},
-    )
-    assert reject_resp.status_code == 200
-    assert reject_resp.json()["status"] == "rejected"
 
-    # Verify task is in rejected state
-    task_resp = await client.get(f"/api/v1/tasks/{task['id']}")
-    assert task_resp.status_code == 200
-    assert task_resp.json()["status"] == "rejected"
-
-    # Retry: rejected -> ready
+    # Execution failure: in_progress -> ready (auto-retry path)
     retry_resp = await client.post(
         f"/api/v1/tasks/{task['id']}/transition",
-        json={"new_status": "ready", "actor": "test", "reason": "retrying"},
+        json={"new_status": "ready", "actor": "pm", "reason": "Execution failed, retrying"},
     )
     assert retry_resp.status_code == 200
     assert retry_resp.json()["status"] == "ready"
-    assert retry_resp.json()["previous_status"] == "rejected"
 
     # Verify task is back to ready state and execution fields are reset
     task_resp = await client.get(f"/api/v1/tasks/{task['id']}")
@@ -182,6 +182,24 @@ async def test_rejected_to_ready_retry(client: AsyncClient):
     final_task = task_resp.json()
     assert final_task["status"] == "ready"
     assert final_task["worker_id"] is None
-    assert final_task["reviewer_id"] is None
     assert final_task["error_message"] is None
-    assert final_task["qa_result"] is None
+
+
+async def test_done_is_terminal(client: AsyncClient, db_session: AsyncSession):
+    """Verify that done is a terminal state."""
+    project_id, phase_id = await _create_project_and_phase(client, db_session)
+    task = await _create_task(client, project_id, phase_id, "Terminal Task")
+
+    # Move through: ready -> queued -> in_progress -> review -> done
+    await client.post(f"/api/v1/tasks/{task['id']}/transition", json={"new_status": "queued", "actor": "test"})
+    await client.post(f"/api/v1/tasks/{task['id']}/transition", json={"new_status": "in_progress", "actor": "test"})
+    await client.post(f"/api/v1/tasks/{task['id']}/transition", json={"new_status": "review", "actor": "test"})
+    await client.post(f"/api/v1/tasks/{task['id']}/transition", json={"new_status": "done", "actor": "test"})
+
+    # Try to transition done -> anything (should fail)
+    response = await client.post(
+        f"/api/v1/tasks/{task['id']}/transition",
+        json={"new_status": "ready", "actor": "test"},
+    )
+    assert response.status_code == 400
+    assert "Invalid transition" in response.json()["detail"]

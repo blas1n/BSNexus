@@ -6,4 +6,6 @@ export const projectsApi = {
   get: (id: string) => apiClient.get<Project>(`/api/v1/projects/${id}`).then(r => r.data),
   create: (data: ProjectCreate) => apiClient.post<Project>('/api/v1/projects', data).then(r => r.data),
   update: (id: string, data: ProjectUpdate) => apiClient.patch<Project>(`/api/v1/projects/${id}`, data).then(r => r.data),
+  delete: (id: string) => apiClient.delete(`/api/v1/projects/${id}`).then(r => r.data),
+  batchDelete: (ids: string[]) => apiClient.post<{ deleted: number }>('/api/v1/projects/batch-delete', { ids }).then(r => r.data),
 }

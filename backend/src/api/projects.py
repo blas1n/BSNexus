@@ -118,6 +118,40 @@ async def update_project(
     return schemas.ProjectResponse.model_validate(project)
 
 
+@router.delete("/{project_id}", response_model=schemas.DeleteResponse)
+async def delete_project(
+    project_id: UUID,
+    db: AsyncSession = Depends(get_db),
+) -> schemas.DeleteResponse:
+    """Delete a project and all associated phases, tasks, and design sessions."""
+    repo = ProjectRepository(db)
+    project = await repo.get_by_id(project_id)
+
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    await repo.delete(project)
+    await repo.commit()
+
+    return schemas.DeleteResponse(detail="Project deleted")
+
+
+@router.post("/batch-delete", response_model=schemas.BatchDeleteResponse)
+async def batch_delete_projects(
+    body: schemas.BatchDeleteRequest,
+    db: AsyncSession = Depends(get_db),
+) -> schemas.BatchDeleteResponse:
+    """Delete multiple projects by IDs."""
+    from sqlalchemy import delete as sa_delete
+
+    result = await db.execute(
+        sa_delete(models.Project).where(models.Project.id.in_(body.ids))
+    )
+    await db.commit()
+    deleted: int = result.rowcount if result.rowcount and result.rowcount > 0 else 0  # type: ignore[attr-defined]
+    return schemas.BatchDeleteResponse(deleted=deleted)
+
+
 # -- Phase Endpoints -----------------------------------------------------------
 
 

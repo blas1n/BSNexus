@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import asyncio
+import json
 import uuid
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock
 
 import pytest
 
+from backend.src.api.board import _board_event_generator, _build_task_response, _get_board_data
 from backend.src.main import app
 from backend.src.models import Phase, PhaseStatus, Project, ProjectStatus, Task, TaskPriority, TaskStatus
 
@@ -94,15 +97,20 @@ async def test_get_board_empty_project(client, db_session, mock_redis):
     data = response.json()
     assert data["project_id"] == str(project.id)
 
-    # All columns should be empty (wrapped in BoardColumn format)
-    for status in TaskStatus:
+    # All kanban columns should be empty (redesign is not a kanban column)
+    kanban_statuses = [s for s in TaskStatus if s != TaskStatus.redesign]
+    for status in kanban_statuses:
         assert status.value in data["columns"]
         assert data["columns"][status.value] == {"tasks": []}
 
+    # redesign should NOT be in columns
+    assert "redesign" not in data["columns"]
+
+    # redesign_tasks should be empty
+    assert data["redesign_tasks"] == []
+
     # Stats should all be zero
     assert data["stats"]["total"] == 0
-    for status in TaskStatus:
-        assert data["stats"][status.value] == 0
 
     # Workers section should be present
     assert "workers" in data
@@ -167,7 +175,7 @@ async def test_get_board_with_tasks(client, db_session, mock_redis):
     assert len(data["columns"]["waiting"]["tasks"]) == 0
     assert len(data["columns"]["queued"]["tasks"]) == 0
     assert len(data["columns"]["review"]["tasks"]) == 0
-    assert len(data["columns"]["rejected"]["tasks"]) == 0
+    assert "redesign" not in data["columns"]
 
 
 @pytest.mark.asyncio
@@ -263,3 +271,138 @@ async def test_get_board_workers(client, db_session, mock_redis):
     assert data["workers"]["total"] == 0
     assert data["workers"]["idle"] == 0
     assert data["workers"]["busy"] == 0
+
+
+# -- SSE Board Events ----------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_board_event_generator_yields_matching_events():
+    """_board_event_generator should yield events matching the project_id."""
+    project_id = str(uuid.uuid4())
+    other_project_id = str(uuid.uuid4())
+
+    mock_redis = AsyncMock()
+
+    # Simulate xread returning messages: one matching, one not
+    call_count = 0
+
+    async def mock_xread(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return [
+                (
+                    "events:board",
+                    [
+                        ("1-0", {"project_id": project_id, "event": "task_transition", "task_id": "t1"}),
+                        ("2-0", {"project_id": other_project_id, "event": "task_transition", "task_id": "t2"}),
+                    ],
+                )
+            ]
+        # After first call, raise CancelledError to stop the generator
+        raise asyncio.CancelledError()
+
+    mock_redis.xread = mock_xread
+
+    events: list[dict] = []
+    try:
+        async for event in _board_event_generator(project_id, mock_redis):
+            events.append(event)
+    except asyncio.CancelledError:
+        pass
+
+    # Only the matching event should be yielded
+    assert len(events) == 1
+    assert "event" not in events[0]  # no named SSE event key — sent as unnamed message
+    data = json.loads(events[0]["data"])
+    assert data["event"] == "task_transition"
+    assert data["task_id"] == "t1"
+    assert data["project_id"] == project_id
+
+
+@pytest.mark.asyncio
+async def test_board_event_generator_handles_empty_xread():
+    """_board_event_generator should handle empty xread responses gracefully."""
+    project_id = str(uuid.uuid4())
+    mock_redis = AsyncMock()
+
+    call_count = 0
+
+    async def mock_xread(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count <= 2:
+            return []
+        raise asyncio.CancelledError()
+
+    mock_redis.xread = mock_xread
+
+    events: list[dict] = []
+    try:
+        async for event in _board_event_generator(project_id, mock_redis):
+            events.append(event)
+    except asyncio.CancelledError:
+        pass
+
+    assert len(events) == 0
+    assert call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_board_events_endpoint_returns_sse_response(client, db_session, mock_redis):
+    """GET /api/v1/board/{project_id}/events should return SSE content type."""
+    project, _phase, _task = await create_project_phase_task(db_session)
+
+    # Configure mock_redis.xread to return empty then cancel
+    call_count = 0
+
+    async def mock_xread(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return []
+        raise asyncio.CancelledError()
+
+    mock_redis.xread = mock_xread
+
+    response = await client.get(f"/api/v1/board/{project.id}/events", headers={"Accept": "text/event-stream"})
+
+    # SSE responses return 200 with text/event-stream content type
+    assert response.status_code == 200
+    assert "text/event-stream" in response.headers.get("content-type", "")
+
+
+@pytest.mark.asyncio
+async def test_build_task_response_includes_all_fields(db_session):
+    """_build_task_response should map all Task fields to TaskResponse."""
+    project, phase, _task = await create_project_phase_task(db_session, status=TaskStatus.ready)
+
+    now = datetime.now(timezone.utc)
+    task = Task(
+        id=uuid.uuid4(), project_id=project.id, phase_id=phase.id,
+        title="T", status=TaskStatus.ready, priority=TaskPriority.high,
+        version=2, retry_count=1, max_retries=5,
+        branch_name="feat/x", commit_hash="abc123",
+        created_at=now, updated_at=now,
+    )
+    db_session.add(task)
+    await db_session.commit()
+
+    # Reload with eager loading via TaskRepository to avoid lazy-load issues
+    from backend.src.repositories.task_repository import TaskRepository
+    repo = TaskRepository(db_session)
+    loaded_task = await repo.get_by_id(task.id)
+
+    resp = _build_task_response(loaded_task)
+
+    assert resp.id == task.id
+    assert resp.title == "T"
+    assert resp.status.value == "ready"
+    assert resp.priority.value == "high"
+    assert resp.version == 2
+    assert resp.retry_count == 1
+    assert resp.max_retries == 5
+    assert resp.branch_name == "feat/x"
+    assert resp.commit_hash == "abc123"
+    assert resp.depends_on == []

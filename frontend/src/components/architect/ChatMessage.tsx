@@ -16,6 +16,14 @@ function formatTime(dateStr: string): string {
   }
 }
 
+function sanitizeContent(content: string): string {
+  return content
+    .replace(/<design_context>[\s\S]*?<\/design_context>/g, '')
+    .replace(/<design_context>[\s\S]*/g, '')
+    .replace(/\[FINALIZE\]/g, '')
+    .trim()
+}
+
 export default function ChatMessage({ message }: Props) {
   const theme = useThemeStore((s) => s.theme)
   const isDark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
@@ -50,7 +58,7 @@ export default function ChatMessage({ message }: Props) {
                 },
               }}
             >
-              {message.content}
+              {sanitizeContent(message.content)}
             </ReactMarkdown>
             {message.isStreaming && (
               <span className="inline-block w-2 h-4 bg-text-tertiary animate-pulse ml-0.5" />

@@ -78,6 +78,8 @@ async def test_worker_registration_and_list(db_session: AsyncSession):
         assert "token" in data
         assert len(data["token"]) == 64
         assert data["heartbeat_interval"] == 30
+        assert data["poll_interval"] == 2
+        # Backward-compat: streams and consumer_groups still present
         assert data["streams"]["tasks_queue"] == "tasks:queue"
         assert data["streams"]["tasks_results"] == "tasks:results"
         assert data["streams"]["tasks_qa"] == "tasks:qa"

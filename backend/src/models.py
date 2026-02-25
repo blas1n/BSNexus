@@ -44,8 +44,7 @@ class TaskStatus(str, enum.Enum):
     in_progress = "in_progress"
     review = "review"
     done = "done"
-    rejected = "rejected"
-    blocked = "blocked"
+    redesign = "redesign"
 
 
 class TaskPriority(str, enum.Enum):
@@ -108,6 +107,7 @@ class Project(Base):
     design_sessions: Mapped[list["DesignSession"]] = relationship(
         "DesignSession", back_populates="project", cascade="all, delete-orphan"
     )
+    workers: Mapped[list["Worker"]] = relationship("Worker", back_populates="project")
 
 
 class Phase(Base):
@@ -156,6 +156,9 @@ class Task(Base):
     qa_result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     output_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_retries: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    qa_feedback_history: Mapped[list | None] = mapped_column(JSON, nullable=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -206,10 +209,14 @@ class Worker(Base):
     status: Mapped[WorkerStatus] = mapped_column(Enum(WorkerStatus), nullable=False, default=WorkerStatus.idle)
     current_task_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
     executor_type: Mapped[str] = mapped_column(String(50), nullable=False, default="claude-code")
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("projects.id", ondelete="SET NULL"), nullable=True
+    )
     registered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_heartbeat: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Relationships
+    project: Mapped["Project | None"] = relationship("Project", back_populates="workers")
     assigned_tasks: Mapped[list["Task"]] = relationship(
         "Task", foreign_keys=[Task.worker_id], back_populates="worker"
     )
@@ -224,6 +231,9 @@ class DesignSession(Base):
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     project_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("projects.id", ondelete="SET NULL"), nullable=True
+    )
+    worker_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("workers.id", ondelete="SET NULL"), nullable=True
     )
     name: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
     status: Mapped[DesignSessionStatus] = mapped_column(

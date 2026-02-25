@@ -179,6 +179,159 @@ async def test_register_worker_missing_token(api_client: AsyncClient) -> None:
     assert response.status_code == 422
 
 
+# ── POST /api/workers/register (re-registration) ────────────────────────
+
+
+async def test_re_register_with_valid_token(
+    api_client: AsyncClient, mock_redis: AsyncMock, valid_registration_token: str, db_session: AsyncSession
+) -> None:
+    """Re-register with existing worker_id + valid worker_token should keep same ID."""
+    existing_id = str(uuid.uuid4())
+    existing_token = "a" * 64
+
+    # Pre-insert worker in DB (required for re-registration validation)
+    from datetime import datetime, timezone
+
+    db_session.add(models.Worker(
+        id=uuid.UUID(existing_id), name="w1", platform="linux",
+        executor_type="claude-code", status=models.WorkerStatus.idle,
+        registered_at=datetime.now(timezone.utc),
+    ))
+    await db_session.commit()
+
+    # resolve_token returns the existing worker_id (token still valid)
+    mock_redis.get.return_value = existing_id
+
+    response = await api_client.post(
+        "/api/v1/workers/register",
+        json={
+            "platform": "linux",
+            "registration_token": valid_registration_token,
+            "worker_id": existing_id,
+            "worker_token": existing_token,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["worker_id"] == existing_id
+
+
+async def test_re_register_with_expired_token(
+    api_client: AsyncClient, mock_redis: AsyncMock, valid_registration_token: str, db_session: AsyncSession
+) -> None:
+    """Re-register with expired worker_token + valid registration_token should succeed."""
+    existing_id = str(uuid.uuid4())
+
+    from datetime import datetime, timezone
+
+    db_session.add(models.Worker(
+        id=uuid.UUID(existing_id), name="w1", platform="linux",
+        executor_type="claude-code", status=models.WorkerStatus.idle,
+        registered_at=datetime.now(timezone.utc),
+    ))
+    await db_session.commit()
+
+    # resolve_token returns None (token expired) — registration_token serves as fallback proof
+    mock_redis.get.return_value = None
+
+    response = await api_client.post(
+        "/api/v1/workers/register",
+        json={
+            "platform": "linux",
+            "registration_token": valid_registration_token,
+            "worker_id": existing_id,
+            "worker_token": "expired-token",
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["worker_id"] == existing_id
+
+
+async def test_re_register_without_worker_token(
+    api_client: AsyncClient, mock_redis: AsyncMock, valid_registration_token: str, db_session: AsyncSession
+) -> None:
+    """Re-register with worker_id but no worker_token should succeed if registration_token is valid."""
+    existing_id = str(uuid.uuid4())
+
+    from datetime import datetime, timezone
+
+    db_session.add(models.Worker(
+        id=uuid.UUID(existing_id), name="w1", platform="linux",
+        executor_type="claude-code", status=models.WorkerStatus.idle,
+        registered_at=datetime.now(timezone.utc),
+    ))
+    await db_session.commit()
+
+    response = await api_client.post(
+        "/api/v1/workers/register",
+        json={
+            "platform": "linux",
+            "registration_token": valid_registration_token,
+            "worker_id": existing_id,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["worker_id"] == existing_id
+
+
+async def test_re_register_with_wrong_worker_token(
+    api_client: AsyncClient, mock_redis: AsyncMock, valid_registration_token: str, db_session: AsyncSession
+) -> None:
+    """Re-register with a worker_token that belongs to a different worker should return 403."""
+    existing_id = str(uuid.uuid4())
+    other_id = str(uuid.uuid4())
+
+    from datetime import datetime, timezone
+
+    db_session.add(models.Worker(
+        id=uuid.UUID(existing_id), name="w1", platform="linux",
+        executor_type="claude-code", status=models.WorkerStatus.idle,
+        registered_at=datetime.now(timezone.utc),
+    ))
+    await db_session.commit()
+
+    # resolve_token returns a different worker_id — token belongs to someone else
+    mock_redis.get.return_value = other_id
+
+    response = await api_client.post(
+        "/api/v1/workers/register",
+        json={
+            "platform": "linux",
+            "registration_token": valid_registration_token,
+            "worker_id": existing_id,
+            "worker_token": "stolen-token",
+        },
+    )
+
+    assert response.status_code == 403
+    assert "does not match" in response.json()["detail"]
+
+
+async def test_re_register_unknown_worker_returns_404(
+    api_client: AsyncClient, mock_redis: AsyncMock, valid_registration_token: str
+) -> None:
+    """Re-register with a worker_id not in DB should return 404."""
+    unknown_id = str(uuid.uuid4())
+
+    response = await api_client.post(
+        "/api/v1/workers/register",
+        json={
+            "platform": "linux",
+            "registration_token": valid_registration_token,
+            "worker_id": unknown_id,
+            "worker_token": "some-token",
+        },
+    )
+
+    assert response.status_code == 404
+    assert "not found" in response.json()["detail"].lower()
+
+
 # ── POST /api/workers/{id}/heartbeat ─────────────────────────────────────
 
 
@@ -258,32 +411,36 @@ async def test_heartbeat_token_mismatch(api_client: AsyncClient, mock_redis: Asy
 # ── GET /api/workers ─────────────────────────────────────────────────────
 
 
-async def test_list_workers(api_client: AsyncClient, mock_redis: AsyncMock) -> None:
-    """GET /api/v1/workers should return list of active workers."""
-    mock_redis.scan_iter = MagicMock(
-        return_value=_async_iter(["worker:w-1", "worker:w-2"])
-    )
+async def test_list_workers(
+    api_client: AsyncClient, mock_redis: AsyncMock, db_session: AsyncSession
+) -> None:
+    """GET /api/v1/workers should return DB workers with Redis status merged."""
+    from datetime import datetime, timezone
 
+    w1_id = uuid.uuid4()
+    w2_id = uuid.uuid4()
+    now = datetime.now(timezone.utc)
+
+    # Insert workers into DB
+    db_session.add(models.Worker(
+        id=w1_id, name="W1", platform="linux", capabilities=[],
+        executor_type="claude-code", status=models.WorkerStatus.idle,
+        registered_at=now, last_heartbeat=now,
+    ))
+    db_session.add(models.Worker(
+        id=w2_id, name="W2", platform="darwin", capabilities=["python"],
+        executor_type="claude-code", status=models.WorkerStatus.idle,
+        registered_at=now, last_heartbeat=now,
+    ))
+    await db_session.commit()
+
+    # Mock Redis: w1 is online (idle), w2 is not in Redis (offline)
     async def hgetall_side_effect(key: str) -> dict:
-        if key == "worker:w-1":
+        if key == f"worker:{w1_id}":
             return {
-                "id": "w-1",
-                "name": "W1",
-                "platform": "linux",
-                "capabilities": "[]",
-                "executor_type": "claude-code",
-                "status": "idle",
-                "current_task_id": "",
-            }
-        if key == "worker:w-2":
-            return {
-                "id": "w-2",
-                "name": "W2",
-                "platform": "darwin",
-                "capabilities": '["python"]',
-                "executor_type": "claude-code",
-                "status": "busy",
-                "current_task_id": "task-1",
+                "id": str(w1_id), "name": "W1", "platform": "linux",
+                "capabilities": "[]", "executor_type": "claude-code",
+                "status": "idle", "current_task_id": "",
             }
         return {}
 
@@ -294,14 +451,13 @@ async def test_list_workers(api_client: AsyncClient, mock_redis: AsyncMock) -> N
     assert response.status_code == 200
     data = response.json()
     assert len(data) == 2
-    ids = {w["id"] for w in data}
-    assert ids == {"w-1", "w-2"}
+    by_id = {w["id"]: w for w in data}
+    assert by_id[str(w1_id)]["status"] == "idle"
+    assert by_id[str(w2_id)]["status"] == "offline"
 
 
 async def test_list_workers_empty(api_client: AsyncClient, mock_redis: AsyncMock) -> None:
-    """GET /api/v1/workers with no registered workers returns empty list."""
-    mock_redis.scan_iter = MagicMock(return_value=_async_iter([]))
-
+    """GET /api/v1/workers with no DB workers returns empty list."""
     response = await api_client.get("/api/v1/workers")
 
     assert response.status_code == 200
@@ -323,3 +479,79 @@ async def test_deregister_worker(api_client: AsyncClient, mock_redis: AsyncMock)
     assert data["detail"] == "Worker deregistered"
     assert data["worker_id"] == worker_id
     assert mock_redis.delete.call_count == 2  # worker hash + token key
+
+
+# ── DB upsert on register ───────────────────────────────────────────────
+
+
+async def test_register_creates_db_worker(
+    api_client: AsyncClient, mock_redis: AsyncMock,
+    valid_registration_token: str, db_session: AsyncSession,
+) -> None:
+    """POST /api/workers/register should also create a DB worker row."""
+    from sqlalchemy import select
+
+    response = await api_client.post(
+        "/api/v1/workers/register",
+        json={
+            "name": "db-test-worker",
+            "platform": "linux",
+            "capabilities": {"python": True},
+            "executor_type": "claude-code",
+            "registration_token": valid_registration_token,
+        },
+    )
+    assert response.status_code == 200
+    worker_id = response.json()["worker_id"]
+
+    # Verify DB row exists
+    result = await db_session.execute(
+        select(models.Worker).where(models.Worker.id == uuid.UUID(worker_id))
+    )
+    db_worker = result.scalar_one_or_none()
+    assert db_worker is not None
+    assert db_worker.name == "db-test-worker"
+    assert db_worker.platform == "linux"
+    assert db_worker.project_id is None
+
+
+async def test_re_register_updates_db_worker(
+    api_client: AsyncClient, mock_redis: AsyncMock,
+    valid_registration_token: str, db_session: AsyncSession,
+) -> None:
+    """Re-registering with same worker_id should update existing DB row, not duplicate."""
+    from datetime import datetime, timezone
+    from sqlalchemy import select
+
+    # Create initial DB worker
+    existing_id = uuid.uuid4()
+    existing_token = "b" * 64
+    db_session.add(models.Worker(
+        id=existing_id, name="old-name", platform="linux", capabilities=[],
+        executor_type="claude-code", status=models.WorkerStatus.idle,
+        registered_at=datetime.now(timezone.utc),
+    ))
+    await db_session.commit()
+
+    # resolve_token returns the same worker_id (ownership verified)
+    mock_redis.get.return_value = str(existing_id)
+
+    response = await api_client.post(
+        "/api/v1/workers/register",
+        json={
+            "name": "new-name",
+            "platform": "darwin",
+            "worker_id": str(existing_id),
+            "worker_token": existing_token,
+            "registration_token": valid_registration_token,
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["worker_id"] == str(existing_id)
+
+    # Verify DB row was updated, not duplicated
+    result = await db_session.execute(select(models.Worker))
+    all_workers = result.scalars().all()
+    assert len(all_workers) == 1
+    assert all_workers[0].name == "new-name"
+    assert all_workers[0].platform == "darwin"

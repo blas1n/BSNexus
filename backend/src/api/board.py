@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import AsyncGenerator
 
 import redis.asyncio as aioredis
@@ -9,9 +10,12 @@ from backend.src import models, schemas
 from backend.src.repositories.task_repository import TaskRepository
 from backend.src.storage.database import get_db
 from backend.src.utils.worker_registry import WorkerRegistry
-from fastapi import APIRouter, Depends, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, Request
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/board", tags=["board"])
 
@@ -36,6 +40,9 @@ def _build_task_response(task: models.Task) -> schemas.TaskResponse:
         qa_result=task.qa_result,
         output_path=task.output_path,
         error_message=task.error_message,
+        retry_count=task.retry_count,
+        max_retries=task.max_retries,
+        qa_feedback_history=task.qa_feedback_history,
         version=task.version,
         created_at=task.created_at,
         updated_at=task.updated_at,
@@ -57,11 +64,16 @@ async def _get_board_data(
     repo = TaskRepository(db)
     tasks = await repo.list_by_project(pid, limit=500)
 
-    # Group tasks by status
-    columns: dict[str, list] = {status.value: [] for status in models.TaskStatus}
+    # Group tasks by status — redesign tasks go into a separate list
+    kanban_statuses = [s for s in models.TaskStatus if s != models.TaskStatus.redesign]
+    columns: dict[str, list] = {status.value: [] for status in kanban_statuses}
+    redesign_tasks: list[dict] = []
     for task in tasks:
         task_resp = _build_task_response(task)
-        columns[task.status.value].append(task_resp.model_dump(mode="json"))
+        if task.status == models.TaskStatus.redesign:
+            redesign_tasks.append(task_resp.model_dump(mode="json"))
+        else:
+            columns[task.status.value].append(task_resp.model_dump(mode="json"))
 
     # Stats
     status_counts = await repo.count_by_status(pid)
@@ -70,20 +82,40 @@ async def _get_board_data(
     for status in models.TaskStatus:
         stats[status.value] = status_counts.get(status.value, 0)
 
-    # Worker stats
+    # Worker stats — only workers assigned to this project
     registry = WorkerRegistry(redis_client)
+    assigned_ids: list[str] = []
+    workers: list[dict] = []
     try:
-        workers = await registry.get_all_workers()
+        result = await db.execute(
+            select(models.Worker.id).where(models.Worker.project_id == pid)
+        )
+        assigned_ids = [str(row[0]) for row in result.all()]
+        if assigned_ids:
+            workers = await registry.get_workers_by_ids(assigned_ids)
     except Exception:
-        workers = []
+        logger.warning("Failed to fetch assigned workers for project %s", pid, exc_info=True)
     idle = sum(1 for w in workers if w.get("status") == "idle")
     busy = sum(1 for w in workers if w.get("status") == "busy")
+    offline = len(assigned_ids) - len(workers)
+
+    # Phase lookup: id -> {name, order, status}
+    phase_result = await db.execute(
+        select(models.Phase.id, models.Phase.name, models.Phase.order, models.Phase.status)
+        .where(models.Phase.project_id == pid)
+    )
+    phases = {
+        str(row.id): {"name": row.name, "order": row.order, "status": row.status.value}
+        for row in phase_result.all()
+    }
 
     return {
         "project_id": project_id,
         "columns": {status: {"tasks": task_list} for status, task_list in columns.items()},
         "stats": stats,
-        "workers": {"total": len(workers), "idle": idle, "busy": busy},
+        "workers": {"total": len(assigned_ids), "idle": idle, "busy": busy, "offline": offline},
+        "phases": phases,
+        "redesign_tasks": redesign_tasks,
     }
 
 
@@ -118,7 +150,6 @@ async def _board_event_generator(
                         event_project_id = data.get("project_id", "")
                         if event_project_id == project_id:
                             yield {
-                                "event": data.get("event", "update"),
                                 "data": json.dumps(data),
                             }
         except asyncio.CancelledError:
@@ -133,33 +164,3 @@ async def board_events(
     """SSE stream for board events."""
     redis_client: aioredis.Redis = request.app.state.redis
     return EventSourceResponse(_board_event_generator(project_id, redis_client))
-
-
-async def board_websocket_handler(websocket: WebSocket, project_id: str) -> None:
-    """WebSocket handler for real-time board updates. Registered on the app in main.py."""
-    await websocket.accept()
-    redis_client: aioredis.Redis = websocket.app.state.redis
-
-    try:
-        # Send initial board state (we don't have db session in WS easily, send a welcome)
-        await websocket.send_json({"event": "connected", "project_id": project_id})
-
-        # Poll events:board and forward
-        last_id = "$"
-        while True:
-            messages = await redis_client.xread(
-                streams={"events:board": last_id},
-                count=10,
-                block=5000,
-            )
-            if messages:
-                for _stream_name, entries in messages:
-                    for msg_id, data in entries:
-                        last_id = msg_id
-                        event_project_id = data.get("project_id", "")
-                        if event_project_id == project_id:
-                            await websocket.send_json(data)
-    except WebSocketDisconnect:
-        pass
-    except Exception:
-        pass

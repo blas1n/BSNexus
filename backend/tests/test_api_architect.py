@@ -15,8 +15,10 @@ from backend.src.models import (
     Project,
     ProjectStatus,
     Setting,
+    Worker,
+    WorkerStatus,
 )
-from fastapi import HTTPException, WebSocketDisconnect
+from fastapi import HTTPException
 from httpx import AsyncClient
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -191,6 +193,34 @@ async def test_create_session_success(client: AsyncClient, db_session):
     assert data["status"] == "active"
     assert data["project_id"] is None
     assert len(data["messages"]) == 0
+
+
+async def test_create_session_stores_worker_id(client: AsyncClient, db_session):
+    """POST /api/architect/sessions stores worker_id when provided."""
+    await insert_global_llm_settings(db_session)
+    worker_id = uuid.uuid4()
+
+    # Insert worker in DB so FK constraint is satisfied
+    db_session.add(Worker(
+        id=worker_id, name="w1", platform="linux",
+        executor_type="claude-code", status=WorkerStatus.idle,
+        registered_at=datetime.now(timezone.utc),
+    ))
+    await db_session.commit()
+
+    response = await client.post(
+        "/api/v1/architect/sessions",
+        json={"worker_id": str(worker_id)},
+    )
+    assert response.status_code == 201
+    data = response.json()
+    assert data["worker_id"] == str(worker_id)
+
+
+async def test_create_session_without_worker_id(client: AsyncClient, db_session):
+    """POST /api/architect/sessions without worker_id stores None."""
+    data = await create_session_via_api(client, db_session)
+    assert data.get("worker_id") is None
 
 
 async def test_create_session_uses_global_settings(client: AsyncClient, db_session):
@@ -480,6 +510,48 @@ async def test_finalize_design_success(client: AsyncClient, db_session):
     session = get_resp.json()
     assert session["status"] == "finalized"
     assert session["project_id"] == data["id"]
+
+
+async def test_finalize_assigns_worker_to_project(client: AsyncClient, db_session):
+    """POST /api/architect/sessions/{id}/finalize assigns worker to project."""
+    from sqlalchemy import select
+
+    # Create a worker in DB
+    worker_id = uuid.uuid4()
+    now = datetime.now(timezone.utc)
+    db_session.add(Worker(
+        id=worker_id, name="test-worker", platform="linux", capabilities=[],
+        executor_type="claude-code", status=WorkerStatus.idle,
+        registered_at=now, last_heartbeat=now,
+    ))
+    await db_session.commit()
+
+    # Create session with worker_id
+    await insert_global_llm_settings(db_session)
+    response = await client.post(
+        "/api/v1/architect/sessions",
+        json={"worker_id": str(worker_id)},
+    )
+    session_id = response.json()["id"]
+
+    with patch("backend.src.api.architect.LLMClient") as MockClient:
+        instance = MockClient.return_value
+        instance.structured_output = AsyncMock(return_value=MOCK_FINALIZE_RESPONSE)
+
+        response = await client.post(
+            f"/api/v1/architect/sessions/{session_id}/finalize",
+            json={"repo_path": "/test/repo"},
+        )
+
+    assert response.status_code == 200
+    project_id = response.json()["id"]
+
+    # Verify worker now has project_id assigned
+    result = await db_session.execute(
+        select(Worker).where(Worker.id == worker_id)
+    )
+    worker = result.scalar_one()
+    assert str(worker.project_id) == project_id
 
 
 async def test_finalize_design_with_pm_config(client: AsyncClient, db_session):
@@ -774,30 +846,6 @@ async def test_add_task_llm_error(client: AsyncClient, db_session):
         )
 
     assert response.status_code == 502
-
-
-# ── WebSocket Tests ──────────────────────────────────────────────────
-
-
-async def test_websocket_session_not_found(client: AsyncClient, db_session):
-    """WS /ws/architect/{random_id} sends error and closes when session not found."""
-    from contextlib import asynccontextmanager
-
-    from backend.src.main import app
-    from starlette.testclient import TestClient
-
-    @asynccontextmanager
-    async def _override_session():
-        yield db_session
-
-    # Patch async_session so the WebSocket handler uses the test DB
-    with patch("backend.src.storage.database.async_session", _override_session):
-        with TestClient(app) as sync_client:
-            random_id = str(uuid.uuid4())
-            with sync_client.websocket_connect(f"/ws/architect/{random_id}") as ws:
-                data = ws.receive_json()
-                assert data["type"] == "error"
-                assert "Session not found" in data["content"]
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1546,7 +1594,7 @@ class TestFinalizeDesignDirect:
         assert "base_url" not in result.llm_config["pm"]
 
     async def test_finalize_empty_phases(self, db_session):
-        """Finalize with empty phases list still succeeds."""
+        """Finalize with empty phases list raises 400."""
         from backend.src import schemas
         from backend.src.api.architect import finalize_design
 
@@ -1563,12 +1611,12 @@ class TestFinalizeDesignDirect:
             instance = MockClient.return_value
             instance.structured_output = AsyncMock(return_value=empty_response)
 
-            result = await finalize_design(
-                session_id=session.id, body=body, db=db_session
-            )
-
-        assert result.name == "Empty Project"
-        assert len(result.phases) == 0
+            with pytest.raises(HTTPException) as exc_info:
+                await finalize_design(
+                    session_id=session.id, body=body, db=db_session
+                )
+            assert exc_info.value.status_code == 400
+            assert "at least one phase" in exc_info.value.detail
 
     async def test_finalize_with_out_of_range_dependency_index(self, db_session):
         """Finalize ignores out-of-range depends_on_indices."""
@@ -1994,603 +2042,354 @@ class TestAddTaskDirect:
         assert "No LLM configuration" in exc_info.value.detail
 
 
-# ── architect_websocket (direct call) ────────────────────────────────
+# ── _find_potential_marker_start unit tests ──────────────────────────
 
 
-class TestArchitectWebSocketDirect:
-    """Direct tests for architect_websocket function."""
+class TestFindPotentialMarkerStart:
+    """Direct unit tests for _find_potential_marker_start helper."""
 
-    async def test_websocket_session_not_found(self, db_session):
-        from backend.src.api.architect import architect_websocket
+    def test_no_marker_in_normal_text(self):
+        from backend.src.api.architect import _find_potential_marker_start
 
-        ws = AsyncMock()
-        ws.accept = AsyncMock()
-        ws.send_json = AsyncMock()
-        ws.close = AsyncMock()
+        assert _find_potential_marker_start("Hello world") is None
 
-        with patch("backend.src.storage.database.async_session") as mock_async_session:
-            mock_async_session.return_value.__aenter__ = AsyncMock(
-                return_value=db_session
+    def test_partial_design_context_tag(self):
+        from backend.src.api.architect import _find_potential_marker_start
+
+        result = _find_potential_marker_start("some text<des")
+        assert result is not None
+        assert "some text<des"[result:] == "<des"
+
+    def test_partial_finalize_marker(self):
+        from backend.src.api.architect import _find_potential_marker_start
+
+        result = _find_potential_marker_start("some text[FIN")
+        assert result is not None
+        assert "some text[FIN"[result:] == "[FIN"
+
+    def test_full_design_context_tag_detected(self):
+        from backend.src.api.architect import _find_potential_marker_start
+
+        result = _find_potential_marker_start("text<design_context>")
+        assert result is not None
+        assert "text<design_context>"[result:] == "<design_context>"
+
+    def test_full_finalize_marker_detected(self):
+        from backend.src.api.architect import _find_potential_marker_start
+
+        result = _find_potential_marker_start("text[FINALIZE]")
+        assert result is not None
+        assert "text[FINALIZE]"[result:] == "[FINALIZE]"
+
+    def test_single_angle_bracket(self):
+        from backend.src.api.architect import _find_potential_marker_start
+
+        result = _find_potential_marker_start("some text<")
+        assert result is not None
+        assert "some text<"[result:] == "<"
+
+    def test_single_open_bracket(self):
+        from backend.src.api.architect import _find_potential_marker_start
+
+        result = _find_potential_marker_start("some text[")
+        assert result is not None
+        assert "some text["[result:] == "["
+
+    def test_empty_string(self):
+        from backend.src.api.architect import _find_potential_marker_start
+
+        assert _find_potential_marker_start("") is None
+
+    def test_non_marker_angle_bracket_completed(self):
+        """A completed non-marker tag like <div> should not trigger detection."""
+        from backend.src.api.architect import _find_potential_marker_start
+
+        assert _find_potential_marker_start("text<div>") is None
+
+    def test_non_marker_bracket_completed(self):
+        from backend.src.api.architect import _find_potential_marker_start
+
+        assert _find_potential_marker_start("[FOO]") is None
+
+    def test_design_context_one_char_at_a_time(self):
+        """Progressively build '<design_context>' and verify detection at each step."""
+        from backend.src.api.architect import _find_potential_marker_start
+
+        marker = "<design_context>"
+        for i in range(1, len(marker) + 1):
+            text = "prefix" + marker[:i]
+            result = _find_potential_marker_start(text)
+            assert result is not None, f"Failed to detect prefix of length {i}: {marker[:i]}"
+            assert text[result:] == marker[:i]
+
+
+# ── redesign_phase (direct call) ─────────────────────────────────────
+
+
+class TestRedesignPhaseDirect:
+    """Direct tests for redesign_phase endpoint function."""
+
+    async def _make_phase_with_tasks(self, db_session, *, redesign_count=1, done_count=0):
+        """Helper: create project + phase + tasks in redesign/done status."""
+        from backend.src.models import Task, TaskStatus, TaskPriority
+
+        project, phase = await create_project_with_phase(db_session)
+
+        redesign_tasks = []
+        for i in range(redesign_count):
+            t = Task(
+                id=uuid.uuid4(),
+                project_id=project.id,
+                phase_id=phase.id,
+                title=f"Redesign Task {i+1}",
+                description=f"Failed task {i+1}",
+                status=TaskStatus.redesign,
+                priority=TaskPriority.high,
+                worker_prompt={"prompt": f"Do thing {i+1}"},
+                qa_prompt={"prompt": f"Check thing {i+1}"},
+                error_message=f"Error in task {i+1}",
+                retry_count=3,
+                max_retries=3,
+                qa_feedback_history=[{"round": 1, "feedback": "bad"}],
+                branch_name=phase.branch_name,
             )
-            mock_async_session.return_value.__aexit__ = AsyncMock(return_value=False)
-            await architect_websocket(ws, uuid.uuid4())
+            db_session.add(t)
+            redesign_tasks.append(t)
 
-        ws.accept.assert_called_once()
-        ws.send_json.assert_called_once()
-        assert ws.send_json.call_args is not None
-        call_args = ws.send_json.call_args[0][0]
-        assert call_args["type"] == "error"
-        assert "Session not found" in call_args["content"]
-        ws.close.assert_called_once()
+        done_tasks = []
+        for i in range(done_count):
+            t = Task(
+                id=uuid.uuid4(),
+                project_id=project.id,
+                phase_id=phase.id,
+                title=f"Done Task {i+1}",
+                description=f"Completed task {i+1}",
+                status=TaskStatus.done,
+                priority=TaskPriority.medium,
+                branch_name=phase.branch_name,
+            )
+            db_session.add(t)
+            done_tasks.append(t)
 
-    async def test_websocket_send_message(self, db_session):
-        from backend.src.api.architect import architect_websocket
+        await db_session.commit()
+        return project, phase, redesign_tasks, done_tasks
 
-        session = await create_session_in_db(db_session)
+    async def test_redesign_phase_success(self, db_session):
+        """redesign_phase keeps, deletes, and creates tasks correctly."""
+        from backend.src import schemas
+        from backend.src.api.architect import redesign_phase
 
-        ws = AsyncMock()
-        ws.accept = AsyncMock()
-        ws.send_json = AsyncMock()
-        call_count = 0
+        project, phase, redesign_tasks, _ = await self._make_phase_with_tasks(
+            db_session, redesign_count=2, done_count=1,
+        )
+        kept_task = redesign_tasks[0]
+        deleted_task = redesign_tasks[1]
 
-        async def receive_json_side_effect():
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                return {"type": "message", "content": "Hello architect"}
-            raise WebSocketDisconnect()
+        llm_response = {
+            "reasoning": "Task 2 is obsolete, adding new task instead",
+            "tasks": [
+                {
+                    "id": str(kept_task.id),
+                    "title": "Updated Task 1",
+                    "description": "Modified description",
+                    "worker_prompt": "New worker prompt",
+                    "qa_prompt": "New qa prompt",
+                    "priority": "medium",
+                },
+                {
+                    "title": "Brand New Task",
+                    "description": "From scratch",
+                    "worker_prompt": "Build it",
+                    "qa_prompt": "Test it",
+                    "priority": "low",
+                },
+            ],
+        }
 
-        ws.receive_json = AsyncMock(side_effect=receive_json_side_effect)
-
-        async def mock_stream_chat(messages, **kwargs):
-            for chunk in ["Hi", " there"]:
-                yield chunk
+        body = schemas.PhaseRedesignRequest()
 
         with (
-            patch("backend.src.api.architect.LLMClient") as MockClient,
-            patch("backend.src.storage.database.async_session") as mock_async_session,
+            patch("backend.src.core.llm_client.create_llm_client_from_project") as mock_create,
+            patch("backend.src.storage.redis_client.get_redis", new_callable=AsyncMock) as mock_get_redis,
         ):
-            mock_async_session.return_value.__aenter__ = AsyncMock(
-                return_value=db_session
-            )
-            mock_async_session.return_value.__aexit__ = AsyncMock(return_value=False)
-            instance = MockClient.return_value
-            instance.stream_chat = mock_stream_chat
+            mock_client = AsyncMock()
+            mock_client.structured_output = AsyncMock(return_value=llm_response)
+            mock_create.return_value = mock_client
 
-            await architect_websocket(ws, session.id)
+            mock_redis = AsyncMock()
+            mock_get_redis.return_value = mock_redis
 
-        ws.accept.assert_called_once()
-        # Should have sent chunk events and a done event
-        send_calls = ws.send_json.call_args_list
-        assert len(send_calls) >= 3  # at least 2 chunks + 1 done
-        # Last call should be "done"
-        last_call = send_calls[-1][0][0]
-        assert last_call["type"] == "done"
-        assert last_call["content"] == "Hi there"
+            result = await redesign_phase(phase_id=phase.id, body=body, db=db_session)
 
-    async def test_websocket_unknown_message_type(self, db_session):
-        from backend.src.api.architect import architect_websocket
+        assert result.phase_id == phase.id
+        assert result.project_id == project.id
+        assert result.reasoning == "Task 2 is obsolete, adding new task instead"
+        assert result.tasks_kept == 1
+        assert result.tasks_deleted == 1
+        assert result.tasks_created == 1
 
-        session = await create_session_in_db(db_session)
+    async def test_redesign_phase_not_found(self, db_session):
+        """redesign_phase returns 404 for non-existent phase."""
+        from backend.src import schemas
+        from backend.src.api.architect import redesign_phase
 
-        ws = AsyncMock()
-        ws.accept = AsyncMock()
-        ws.send_json = AsyncMock()
-        call_count = 0
+        body = schemas.PhaseRedesignRequest()
+        with pytest.raises(HTTPException) as exc_info:
+            await redesign_phase(phase_id=uuid.uuid4(), body=body, db=db_session)
+        assert exc_info.value.status_code == 404
+        assert "Phase not found" in exc_info.value.detail
 
-        async def receive_json_side_effect():
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                return {"type": "unknown"}
-            raise WebSocketDisconnect()
+    async def test_redesign_phase_no_redesign_tasks(self, db_session):
+        """redesign_phase returns 400 when phase has no tasks in redesign status."""
+        from backend.src import schemas
+        from backend.src.api.architect import redesign_phase
+        from backend.src.models import Task, TaskStatus, TaskPriority
 
-        ws.receive_json = AsyncMock(side_effect=receive_json_side_effect)
+        project, phase = await create_project_with_phase(db_session)
+        # Add a task in waiting status (not redesign)
+        t = Task(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            phase_id=phase.id,
+            title="Waiting Task",
+            status=TaskStatus.waiting,
+            priority=TaskPriority.medium,
+        )
+        db_session.add(t)
+        await db_session.commit()
 
-        with patch("backend.src.storage.database.async_session") as mock_async_session:
-            mock_async_session.return_value.__aenter__ = AsyncMock(
-                return_value=db_session
-            )
-            mock_async_session.return_value.__aexit__ = AsyncMock(return_value=False)
-            await architect_websocket(ws, session.id)
+        body = schemas.PhaseRedesignRequest()
+        with pytest.raises(HTTPException) as exc_info:
+            await redesign_phase(phase_id=phase.id, body=body, db=db_session)
+        assert exc_info.value.status_code == 400
+        assert "No tasks in redesign status" in exc_info.value.detail
 
-        ws.accept.assert_called_once()
-        # Should have sent error about unknown type
-        ws.send_json.assert_called_once()
-        assert ws.send_json.call_args is not None
-        call_args = ws.send_json.call_args[0][0]
-        assert call_args["type"] == "error"
-        assert "Unknown message type" in call_args["content"]
-
-    async def test_websocket_empty_message(self, db_session):
-        from backend.src.api.architect import architect_websocket
-
-        session = await create_session_in_db(db_session)
-
-        ws = AsyncMock()
-        ws.accept = AsyncMock()
-        ws.send_json = AsyncMock()
-        call_count = 0
-
-        async def receive_json_side_effect():
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                return {"type": "message", "content": ""}
-            raise WebSocketDisconnect()
-
-        ws.receive_json = AsyncMock(side_effect=receive_json_side_effect)
-
-        with patch("backend.src.storage.database.async_session") as mock_async_session:
-            mock_async_session.return_value.__aenter__ = AsyncMock(
-                return_value=db_session
-            )
-            mock_async_session.return_value.__aexit__ = AsyncMock(return_value=False)
-            await architect_websocket(ws, session.id)
-
-        ws.accept.assert_called_once()
-        ws.send_json.assert_called_once()
-        assert ws.send_json.call_args is not None
-        call_args = ws.send_json.call_args[0][0]
-        assert call_args["type"] == "error"
-        assert "Empty message" in call_args["content"]
-
-    async def test_websocket_llm_error(self, db_session):
-        from backend.src.api.architect import architect_websocket
+    async def test_redesign_phase_llm_error(self, db_session):
+        """redesign_phase returns 502 on LLM failure."""
+        from backend.src import schemas
+        from backend.src.api.architect import redesign_phase
         from backend.src.core.llm_client import LLMError
 
-        session = await create_session_in_db(db_session)
+        _, phase, _, _ = await self._make_phase_with_tasks(db_session)
 
-        ws = AsyncMock()
-        ws.accept = AsyncMock()
-        ws.send_json = AsyncMock()
-        call_count = 0
+        body = schemas.PhaseRedesignRequest()
+        with patch("backend.src.core.llm_client.create_llm_client_from_project") as mock_create:
+            mock_client = AsyncMock()
+            mock_client.structured_output = AsyncMock(side_effect=LLMError("Rate limited"))
+            mock_create.return_value = mock_client
 
-        async def receive_json_side_effect():
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                return {"type": "message", "content": "Hello"}
-            raise WebSocketDisconnect()
+            with pytest.raises(HTTPException) as exc_info:
+                await redesign_phase(phase_id=phase.id, body=body, db=db_session)
+            assert exc_info.value.status_code == 502
+            assert "LLM error" in exc_info.value.detail
 
-        ws.receive_json = AsyncMock(side_effect=receive_json_side_effect)
+    async def test_redesign_phase_invalid_tasks_format(self, db_session):
+        """redesign_phase returns 502 when LLM returns non-list tasks."""
+        from backend.src import schemas
+        from backend.src.api.architect import redesign_phase
 
-        async def mock_stream_chat_error(messages, **kwargs):
-            raise LLMError("Stream failed")
-            yield  # make it a generator  # noqa: E501
+        _, phase, _, _ = await self._make_phase_with_tasks(db_session)
+
+        llm_response = {"reasoning": "ok", "tasks": "not a list"}
+        body = schemas.PhaseRedesignRequest()
+        with patch("backend.src.core.llm_client.create_llm_client_from_project") as mock_create:
+            mock_client = AsyncMock()
+            mock_client.structured_output = AsyncMock(return_value=llm_response)
+            mock_create.return_value = mock_client
+
+            with pytest.raises(HTTPException) as exc_info:
+                await redesign_phase(phase_id=phase.id, body=body, db=db_session)
+            assert exc_info.value.status_code == 502
+            assert "invalid tasks format" in exc_info.value.detail
+
+    async def test_redesign_phase_with_llm_config_override(self, db_session):
+        """redesign_phase uses request body llm_config when provided."""
+        from backend.src import schemas
+        from backend.src.api.architect import redesign_phase
+
+        _, phase, _, _ = await self._make_phase_with_tasks(db_session)
+
+        llm_response = {"reasoning": "redesigned", "tasks": []}
+        body = schemas.PhaseRedesignRequest(
+            llm_config=schemas.LLMConfigInput(
+                api_key="sk-override",
+                model="gpt-4o",
+                base_url="https://override.api",
+            )
+        )
 
         with (
-            patch("backend.src.api.architect.LLMClient") as MockClient,
-            patch("backend.src.storage.database.async_session") as mock_async_session,
+            patch("backend.src.api.architect.LLMClient") as MockLLMClient,
+            patch("backend.src.storage.redis_client.get_redis", new_callable=AsyncMock) as mock_get_redis,
         ):
-            mock_async_session.return_value.__aenter__ = AsyncMock(
-                return_value=db_session
-            )
-            mock_async_session.return_value.__aexit__ = AsyncMock(return_value=False)
-            instance = MockClient.return_value
-            instance.stream_chat = mock_stream_chat_error
+            instance = MockLLMClient.return_value
+            instance.structured_output = AsyncMock(return_value=llm_response)
+            mock_get_redis.return_value = AsyncMock()
 
-            await architect_websocket(ws, session.id)
+            result = await redesign_phase(phase_id=phase.id, body=body, db=db_session)
 
-        ws.accept.assert_called_once()
-        # Should have sent an error event
-        error_calls = [
-            c for c in ws.send_json.call_args_list if c[0][0].get("type") == "error"
-        ]
-        assert len(error_calls) >= 1
-        assert "Stream failed" in error_calls[0][0][0]["content"]
+        assert result.tasks_deleted == 1  # the one redesign task was deleted
+        assert result.tasks_created == 0
+        # Verify LLMClient was called with override config
+        MockLLMClient.assert_called_once()
+        call_config = MockLLMClient.call_args[0][0]
+        assert call_config.api_key == "sk-override"
 
-    async def test_websocket_message_without_content_key(self, db_session):
-        """WebSocket message with type=message but no content key uses empty string."""
-        from backend.src.api.architect import architect_websocket
+    async def test_redesign_phase_project_not_found(self, db_session):
+        """redesign_phase returns 404 if project is missing (orphaned phase)."""
+        from backend.src import schemas
+        from backend.src.api.architect import redesign_phase
 
-        session = await create_session_in_db(db_session)
+        # Create phase without a valid project by patching project lookup
+        _, phase, _, _ = await self._make_phase_with_tasks(db_session)
 
-        ws = AsyncMock()
-        ws.accept = AsyncMock()
-        ws.send_json = AsyncMock()
-        call_count = 0
-
-        async def receive_json_side_effect():
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                return {"type": "message"}  # no "content" key
-            raise WebSocketDisconnect()
-
-        ws.receive_json = AsyncMock(side_effect=receive_json_side_effect)
-
-        with patch("backend.src.storage.database.async_session") as mock_async_session:
-            mock_async_session.return_value.__aenter__ = AsyncMock(
-                return_value=db_session
-            )
-            mock_async_session.return_value.__aexit__ = AsyncMock(return_value=False)
-            await architect_websocket(ws, session.id)
-
-        ws.accept.assert_called_once()
-        # Should get "Empty message" error since content defaults to ""
-        ws.send_json.assert_called_once()
-        assert ws.send_json.call_args is not None
-        call_args = ws.send_json.call_args[0][0]
-        assert call_args["type"] == "error"
-        assert "Empty message" in call_args["content"]
+        body = schemas.PhaseRedesignRequest()
+        with patch("backend.src.api.architect.ProjectRepository") as MockProjRepo:
+            mock_repo = MockProjRepo.return_value
+            mock_repo.get_by_id = AsyncMock(return_value=None)
+            # Also need to keep PhaseRepository working
+            with pytest.raises(HTTPException) as exc_info:
+                await redesign_phase(phase_id=phase.id, body=body, db=db_session)
+            assert exc_info.value.status_code == 404
+            assert "Project not found" in exc_info.value.detail
 
 
-# ── Finalize Marker Detection Tests ─────────────────────────────────
+# ── _clean_response unit tests ───────────────────────────────────────
 
 
 class TestCleanResponse:
-    """Unit tests for _clean_response helper."""
+    """Direct unit tests for _clean_response helper."""
 
-    def test_no_marker_no_context(self):
+    def test_no_markers(self):
         from backend.src.api.architect import _clean_response
 
-        text, found, ctx = _clean_response("Hello world")
-        assert text == "Hello world"
-        assert found is False
-        assert ctx is None
+        cleaned, has_finalize, design_ctx = _clean_response("Hello, how can I help?")
+        assert cleaned == "Hello, how can I help?"
+        assert has_finalize is False
+        assert design_ctx is None
 
-    def test_marker_at_end(self):
+    def test_finalize_only(self):
         from backend.src.api.architect import _clean_response
 
-        text, found, ctx = _clean_response("Summary of the design\n[FINALIZE]")
-        assert text == "Summary of the design"
-        assert found is True
-        assert ctx is None
+        cleaned, has_finalize, design_ctx = _clean_response("Done!\n[FINALIZE]")
+        assert cleaned == "Done!"
+        assert has_finalize is True
+        assert design_ctx is None
 
-    def test_marker_in_middle(self):
+    def test_design_context_and_finalize(self):
         from backend.src.api.architect import _clean_response
 
-        text, found, ctx = _clean_response("Before [FINALIZE] After")
-        assert "[FINALIZE]" not in text
-        assert found is True
-
-    def test_empty_string(self):
-        from backend.src.api.architect import _clean_response
-
-        text, found, ctx = _clean_response("")
-        assert text == ""
-        assert found is False
-        assert ctx is None
-
-    def test_only_marker(self):
-        from backend.src.api.architect import _clean_response
-
-        text, found, ctx = _clean_response("[FINALIZE]")
-        assert text == ""
-        assert found is True
-
-    def test_design_context_with_finalize(self):
-        from backend.src.api.architect import _clean_response
-
-        raw = "Summary here\n<design_context>\nProject: My SaaS\nTech: FastAPI\n</design_context>\n[FINALIZE]"
-        text, found, ctx = _clean_response(raw)
-        assert found is True
-        assert ctx == "Project: My SaaS\nTech: FastAPI"
-        assert "<design_context>" not in text
-        assert "[FINALIZE]" not in text
-        assert "Summary here" in text
+        text = "Here is the design.\n<design_context>\nProject: Test\nStack: Python\n</design_context>\n[FINALIZE]"
+        cleaned, has_finalize, design_ctx = _clean_response(text)
+        assert cleaned == "Here is the design."
+        assert has_finalize is True
+        assert design_ctx == "Project: Test\nStack: Python"
 
     def test_design_context_without_finalize(self):
         from backend.src.api.architect import _clean_response
 
-        raw = "Hello\n<design_context>Some context</design_context>\nMore text"
-        text, found, ctx = _clean_response(raw)
-        assert found is False
-        assert ctx == "Some context"
-        assert "<design_context>" not in text
-
-
-class TestExtractDesignContext:
-    """Unit tests for _extract_design_context helper."""
-
-    def test_extracts_from_last_assistant_message(self):
-        from backend.src.api.architect import _extract_design_context
-
-        now = datetime.now(timezone.utc)
-        session = MagicMock()
-        msg = MagicMock()
-        msg.role = MessageRole.assistant
-        msg.content = "Summary\n<design_context>Project: Test</design_context>"
-        msg.created_at = now
-        msg.message_type = MessageType.chat
-        session.messages = [msg]
-
-        result = _extract_design_context(session)
-        assert result == "Project: Test"
-
-    def test_returns_none_when_no_context(self):
-        from backend.src.api.architect import _extract_design_context
-
-        now = datetime.now(timezone.utc)
-        session = MagicMock()
-        msg = MagicMock()
-        msg.role = MessageRole.assistant
-        msg.content = "Just a regular message"
-        msg.created_at = now
-        msg.message_type = MessageType.chat
-        session.messages = [msg]
-
-        result = _extract_design_context(session)
-        assert result is None
-
-    def test_returns_none_when_no_assistant_messages(self):
-        from backend.src.api.architect import _extract_design_context
-
-        session = MagicMock()
-        session.messages = []
-        assert _extract_design_context(session) is None
-
-    def test_ignores_internal_messages(self):
-        from backend.src.api.architect import _extract_design_context
-
-        now = datetime.now(timezone.utc)
-        session = MagicMock()
-        internal_msg = MagicMock()
-        internal_msg.role = MessageRole.assistant
-        internal_msg.content = "<design_context>Internal</design_context>"
-        internal_msg.created_at = now
-        internal_msg.message_type = MessageType.internal
-        session.messages = [internal_msg]
-
-        result = _extract_design_context(session)
-        assert result is None
-
-
-class TestSendMessageFinalizeReady:
-    """Tests for finalize_ready flag on REST send_message endpoint."""
-
-    @pytest.mark.asyncio
-    async def test_design_context_stripped_from_response_but_stored_in_db(
-        self, db_session
-    ):
-        """send_message strips design_context from frontend response but stores it in DB."""
-        from backend.src.api.architect import send_message
-        from backend.src.models import DesignMessage
-        from backend.src.schemas import MessageRequest
-        from sqlalchemy import select
-
-        session = await create_session_in_db(db_session)
-        body = MessageRequest(content="Let's finalize")
-
-        raw_response = "Summary here\n<design_context>\nProject: MySaaS\n</design_context>\n[FINALIZE]"
-
-        with patch("backend.src.api.architect.LLMClient") as MockClient:
-            instance = MockClient.return_value
-            instance.chat = AsyncMock(return_value=raw_response)
-
-            result = await send_message(session_id=session.id, body=body, db=db_session)
-
-        # Frontend response should NOT contain design_context or [FINALIZE]
-        assert "<design_context>" not in result.content
-        assert "[FINALIZE]" not in result.content
-        assert "Summary here" in result.content
-        assert result.finalize_ready is True
-
-        # DB should contain design_context (without [FINALIZE] marker)
-        db_result = await db_session.execute(
-            select(DesignMessage)
-            .where(DesignMessage.session_id == session.id)
-            .where(DesignMessage.role == MessageRole.assistant)
-        )
-        stored_msg = db_result.scalar_one()
-        assert "<design_context>" in stored_msg.content
-        assert "Project: MySaaS" in stored_msg.content
-        assert (
-            "[FINALIZE]" not in stored_msg.content
-        )  # marker stripped from stored version
-
-    @pytest.mark.asyncio
-    async def test_finalize_ready_when_marker_present(self, db_session):
-        from backend.src.api.architect import send_message
-        from backend.src.schemas import MessageRequest
-
-        session = await create_session_in_db(db_session)
-        body = MessageRequest(content="Looks good, finalize it")
-
-        with patch("backend.src.api.architect.LLMClient") as MockClient:
-            instance = MockClient.return_value
-            instance.chat = AsyncMock(return_value="Design is complete.\n[FINALIZE]")
-
-            result = await send_message(session_id=session.id, body=body, db=db_session)
-
-        assert result.finalize_ready is True
-        assert "[FINALIZE]" not in result.content
-
-    @pytest.mark.asyncio
-    async def test_finalize_ready_false_when_no_marker(self, db_session):
-        from backend.src.api.architect import send_message
-        from backend.src.schemas import MessageRequest
-
-        session = await create_session_in_db(db_session)
-        body = MessageRequest(content="Tell me more")
-
-        with patch("backend.src.api.architect.LLMClient") as MockClient:
-            instance = MockClient.return_value
-            instance.chat = AsyncMock(return_value="Sure, let me explain more.")
-
-            result = await send_message(session_id=session.id, body=body, db=db_session)
-
-        assert result.finalize_ready is False
-
-
-class TestWebSocketFinalizeReady:
-    """Tests for finalize_ready WebSocket event."""
-
-    @pytest.mark.asyncio
-    async def test_websocket_sends_finalize_ready(self, db_session):
-        """WebSocket sends finalize_ready event when LLM response contains [FINALIZE]."""
-        from backend.src.api.architect import architect_websocket
-
-        session = await create_session_in_db(db_session)
-
-        ws = MagicMock()
-        ws.accept = AsyncMock()
-        ws.send_json = AsyncMock()
-        call_count = 0
-
-        async def receive_json_side_effect():
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                return {"type": "message", "content": "Let's finalize"}
-            raise WebSocketDisconnect()
-
-        ws.receive_json = AsyncMock(side_effect=receive_json_side_effect)
-
-        async def mock_stream_chat(messages, **kwargs):
-            yield "Design summary"
-            yield "\n[FINALIZE]"
-
-        with (
-            patch("backend.src.api.architect.LLMClient") as MockClient,
-            patch("backend.src.storage.database.async_session") as mock_async_session,
-        ):
-            mock_async_session.return_value.__aenter__ = AsyncMock(
-                return_value=db_session
-            )
-            mock_async_session.return_value.__aexit__ = AsyncMock(return_value=False)
-            instance = MockClient.return_value
-            instance.stream_chat = mock_stream_chat
-
-            await architect_websocket(ws, session.id)
-
-        send_calls = ws.send_json.call_args_list
-        # Verify done event has cleaned content
-        done_calls = [c for c in send_calls if c[0][0].get("type") == "done"]
-        assert len(done_calls) == 1
-        assert "[FINALIZE]" not in done_calls[0][0][0]["content"]
-        assert done_calls[0][0][0]["content"] == "Design summary"
-        # Verify finalize_ready event was sent
-        finalize_calls = [
-            c for c in send_calls if c[0][0].get("type") == "finalize_ready"
-        ]
-        assert len(finalize_calls) == 1
-
-    @pytest.mark.asyncio
-    async def test_websocket_no_finalize_ready_without_marker(self, db_session):
-        """WebSocket does NOT send finalize_ready when response has no marker."""
-        from backend.src.api.architect import architect_websocket
-
-        session = await create_session_in_db(db_session)
-
-        ws = MagicMock()
-        ws.accept = AsyncMock()
-        ws.send_json = AsyncMock()
-        call_count = 0
-
-        async def receive_json_side_effect():
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                return {"type": "message", "content": "Tell me more"}
-            raise WebSocketDisconnect()
-
-        ws.receive_json = AsyncMock(side_effect=receive_json_side_effect)
-
-        async def mock_stream_chat(messages, **kwargs):
-            yield "Sure, "
-            yield "let me explain."
-
-        with (
-            patch("backend.src.api.architect.LLMClient") as MockClient,
-            patch("backend.src.storage.database.async_session") as mock_async_session,
-        ):
-            mock_async_session.return_value.__aenter__ = AsyncMock(
-                return_value=db_session
-            )
-            mock_async_session.return_value.__aexit__ = AsyncMock(return_value=False)
-            instance = MockClient.return_value
-            instance.stream_chat = mock_stream_chat
-
-            await architect_websocket(ws, session.id)
-
-        send_calls = ws.send_json.call_args_list
-        finalize_calls = [
-            c for c in send_calls if c[0][0].get("type") == "finalize_ready"
-        ]
-        assert len(finalize_calls) == 0
-
-
-class TestWebSocketDisconnectMidStream:
-    """Tests for graceful handling of client disconnect during streaming."""
-
-    @pytest.mark.asyncio
-    async def test_disconnect_during_chunk_send(self, db_session):
-        """WebSocketDisconnect during chunk send should not crash the handler."""
-        from backend.src.api.architect import architect_websocket
-
-        session = await create_session_in_db(db_session)
-        call_count = 0
-
-        ws = MagicMock()
-        ws.accept = AsyncMock()
-
-        async def receive_json_side_effect():
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                return {"type": "message", "content": "Hello"}
-            raise WebSocketDisconnect()
-
-        ws.receive_json = AsyncMock(side_effect=receive_json_side_effect)
-        ws.send_json = AsyncMock(side_effect=WebSocketDisconnect())
-
-        async def mock_stream_chat(messages, **kwargs):
-            yield "Some response"
-
-        with (
-            patch("backend.src.api.architect.LLMClient") as MockClient,
-            patch("backend.src.storage.database.async_session") as mock_async_session,
-        ):
-            mock_async_session.return_value.__aenter__ = AsyncMock(
-                return_value=db_session
-            )
-            mock_async_session.return_value.__aexit__ = AsyncMock(return_value=False)
-            instance = MockClient.return_value
-            instance.stream_chat = mock_stream_chat
-
-            # Should not raise — disconnect is handled gracefully
-            await architect_websocket(ws, session.id)
-
-    @pytest.mark.asyncio
-    async def test_runtime_error_during_error_send_breaks_loop(self, db_session):
-        """RuntimeError when sending error on closed socket should break the loop cleanly."""
-        from backend.src.api.architect import architect_websocket
-
-        session = await create_session_in_db(db_session)
-        call_count = 0
-
-        ws = MagicMock()
-        ws.accept = AsyncMock()
-
-        async def receive_json_side_effect():
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                return {"type": "message", "content": "Hello"}
-            raise WebSocketDisconnect()
-
-        ws.receive_json = AsyncMock(side_effect=receive_json_side_effect)
-
-        async def mock_stream_chat(messages, **kwargs):
-            raise ValueError("Unexpected error")
-            yield  # noqa: E501
-
-        with (
-            patch("backend.src.api.architect.LLMClient") as MockClient,
-            patch("backend.src.storage.database.async_session") as mock_async_session,
-        ):
-            mock_async_session.return_value.__aenter__ = AsyncMock(
-                return_value=db_session
-            )
-            mock_async_session.return_value.__aexit__ = AsyncMock(return_value=False)
-            instance = MockClient.return_value
-            instance.stream_chat = mock_stream_chat
-
-            # send_json raises RuntimeError when socket is already closed
-            ws.send_json = AsyncMock(
-                side_effect=RuntimeError("Cannot call send once close sent")
-            )
-
-            await architect_websocket(ws, session.id)
+        text = "Summary\n<design_context>\nSpec here\n</design_context>"
+        cleaned, has_finalize, design_ctx = _clean_response(text)
+        assert cleaned == "Summary"
+        assert has_finalize is False
+        assert design_ctx == "Spec here"

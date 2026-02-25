@@ -8,7 +8,6 @@ const columnStatusColors: Record<string, string> = {
   in_progress: 'var(--status-in-progress)',
   review: 'var(--status-review)',
   done: 'var(--status-done)',
-  rejected: 'var(--status-rejected)',
 }
 
 interface Props {

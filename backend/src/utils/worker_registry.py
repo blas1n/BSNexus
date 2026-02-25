@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import secrets
 
@@ -16,9 +17,10 @@ class WorkerRegistry:
 
     PREFIX = "worker:"
     TOKEN_PREFIX = "worker:token:"
+    DB_HB_PREFIX = "worker:db_heartbeat:"
     TOKEN_TTL = 86400  # 24 hours
 
-    def __init__(self, redis_client: redis.Redis, ttl: int = 60) -> None:
+    def __init__(self, redis_client: redis.Redis, ttl: int = 90) -> None:
         self.redis = redis_client
         self.ttl = ttl
 
@@ -111,7 +113,7 @@ class WorkerRegistry:
             # Filter out token keys
             if isinstance(key, bytes):
                 key = key.decode()
-            if key.startswith(self.TOKEN_PREFIX):
+            if key.startswith(self.TOKEN_PREFIX) or key.startswith(self.DB_HB_PREFIX):
                 continue
 
             worker_id = key[len(self.PREFIX):]
@@ -121,15 +123,28 @@ class WorkerRegistry:
 
         return workers
 
+    async def get_workers_by_ids(self, worker_ids: list[str]) -> list[dict]:
+        """Return worker info for specific IDs. Missing/expired workers are omitted."""
+        if not worker_ids:
+            return []
+        results = await asyncio.gather(*(self.get_worker(wid) for wid in worker_ids))
+        return [w for w in results if w is not None]
+
     async def set_busy(self, worker_id: str, task_id: str) -> None:
         """Set worker status to busy and record the current task."""
         key = self._worker_key(worker_id)
+        if not await self.redis.exists(key):  # type: ignore[misc]
+            return
         await self.redis.hset(key, mapping={"status": "busy", "current_task_id": task_id})  # type: ignore[misc]
+        await self.redis.expire(key, self.ttl)  # type: ignore[misc]
 
     async def set_idle(self, worker_id: str) -> None:
         """Set worker status to idle and clear the current task."""
         key = self._worker_key(worker_id)
+        if not await self.redis.exists(key):  # type: ignore[misc]
+            return
         await self.redis.hset(key, mapping={"status": "idle", "current_task_id": ""})  # type: ignore[misc]
+        await self.redis.expire(key, self.ttl)  # type: ignore[misc]
 
     async def deregister(self, worker_id: str) -> None:
         """Remove a worker and its token from Redis."""

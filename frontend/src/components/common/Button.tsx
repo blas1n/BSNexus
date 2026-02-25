@@ -1,7 +1,7 @@
 import { forwardRef } from 'react'
 
 interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
-  variant?: 'primary' | 'secondary' | 'icon'
+  variant?: 'primary' | 'secondary' | 'ghost' | 'icon'
   size?: 'sm' | 'md' | 'lg'
   loading?: boolean
 }
@@ -15,6 +15,7 @@ const sizeClasses = {
 const variantClasses = {
   primary: 'bg-accent text-white hover:bg-accent-light',
   secondary: 'bg-bg-elevated text-text-secondary hover:bg-bg-hover',
+  ghost: 'bg-transparent text-text-secondary hover:bg-bg-hover',
   icon: 'bg-transparent text-text-tertiary hover:bg-bg-hover p-2',
 }
 

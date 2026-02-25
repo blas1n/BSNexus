@@ -1,8 +1,8 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { useArchitectStore } from '../stores/architectStore'
+import { useToastStore } from '../stores/toastStore'
 import type { ChatMessage as ChatMessageType } from '../stores/architectStore'
-import { useWebSocket } from '../hooks/useWebSocket'
 import { architectApi } from '../api/architect'
 import type { DesignSession } from '../types/architect'
 import ChatMessage from '../components/architect/ChatMessage'
@@ -12,18 +12,27 @@ import NewSessionModal from '../components/architect/NewSessionModal'
 import FinalizePanel from '../components/architect/FinalizePanel'
 import Header from '../components/layout/Header'
 
+function extractDesignContext(content: string): string | null {
+  const match = content.match(/<design_context>([\s\S]*?)<\/design_context>/)
+  return match ? match[1].trim() : null
+}
+
+function stripDesignContext(content: string): string {
+  return content.replace(/<design_context>[\s\S]*?<\/design_context>/g, '').trim()
+}
+
 export default function ArchitectPage() {
   const { sessionId: paramSessionId } = useParams()
   const navigate = useNavigate()
   const location = useLocation()
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const abortRef = useRef<AbortController | null>(null)
 
   const {
     sessionId,
     sessions,
     messages,
     isStreaming,
-    isConnected,
     setSessionId,
     setSessions,
     setMessages,
@@ -34,6 +43,7 @@ export default function ArchitectPage() {
     clearMessages,
   } = useArchitectStore()
 
+  const addToast = useToastStore((s) => s.addToast)
   const [newSessionModalOpen, setNewSessionModalOpen] = useState(false)
   const [showFinalizePanel, setShowFinalizePanel] = useState(false)
   const [designSummary, setDesignSummary] = useState('')
@@ -42,75 +52,22 @@ export default function ArchitectPage() {
   // Find the active session object for name display
   const activeSession = sessions.find((s) => s.id === sessionId) || null
 
+  // Session loaded = connected
+  useEffect(() => {
+    setConnected(!!sessionId)
+  }, [sessionId, setConnected])
+
   // Auto-scroll to bottom
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
-  // WebSocket message handler
-  const handleWsMessage = useCallback((data: unknown) => {
-    const msg = data as { type: string; content?: string; message?: string }
-    switch (msg.type) {
-      case 'chunk':
-        if (!useArchitectStore.getState().isStreaming) {
-          setStreaming(true)
-          addMessage({
-            id: crypto.randomUUID(),
-            role: 'assistant',
-            content: msg.content || '',
-            isStreaming: true,
-            createdAt: new Date().toISOString(),
-          })
-        } else {
-          appendToLastMessage(msg.content || '')
-        }
-        break
-      case 'done': {
-        setStreaming(false)
-        const state = useArchitectStore.getState()
-        const updated = [...state.messages]
-        if (updated.length > 0) {
-          const last = updated[updated.length - 1]
-          updated[updated.length - 1] = { ...last, content: msg.content || last.content, isStreaming: false }
-          setMessages(updated)
-        }
-        break
-      }
-      case 'finalize_ready': {
-        const currentState = useArchitectStore.getState()
-        const lastAssistant = [...currentState.messages].reverse().find(m => m.role === 'assistant')
-        setDesignSummary(lastAssistant?.content || '')
-        setShowFinalizePanel(true)
-        break
-      }
-      case 'error':
-        setStreaming(false)
-        addMessage({
-          id: crypto.randomUUID(),
-          role: 'assistant',
-          content: `Error: ${msg.content || msg.message || 'Unknown error'}`,
-          createdAt: new Date().toISOString(),
-        })
-        break
-    }
-  }, [addMessage, appendToLastMessage, setStreaming, setMessages])
-
-  const wsUrl = sessionId
-    ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/architect/${sessionId}`
-    : ''
-
-  const { send, isConnected: wsConnected } = useWebSocket({
-    url: wsUrl,
-    onMessage: handleWsMessage,
-    onOpen: () => setConnected(true),
-    onClose: () => setConnected(false),
-    reconnect: true,
-    autoConnect: !!sessionId,
-  })
-
+  // Cleanup abort controller on unmount
   useEffect(() => {
-    setConnected(wsConnected)
-  }, [wsConnected, setConnected])
+    return () => {
+      abortRef.current?.abort()
+    }
+  }, [])
 
   // Load sessions list on mount
   useEffect(() => {
@@ -127,7 +84,6 @@ export default function ArchitectPage() {
     const state = location.state as { openNewSession?: boolean } | null
     if (state?.openNewSession) {
       setNewSessionModalOpen(true)
-      // Clear the state so it doesn't re-trigger on back/forward navigation
       navigate(location.pathname, { replace: true, state: {} })
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -148,14 +104,18 @@ export default function ArchitectPage() {
       const chatMessages: ChatMessageType[] = session.messages.map((m) => ({
         id: m.id,
         role: m.role,
-        content: m.content,
+        content: m.role === 'assistant' ? stripDesignContext(m.content) : m.content,
         createdAt: m.created_at,
       }))
       setMessages(chatMessages)
 
-      // If session is already finalized, show the complete state
       if (session.status === 'finalized' && session.project_id) {
         setFinalizedProjectId(session.project_id)
+        const lastAssistant = [...session.messages].reverse().find(m => m.role === 'assistant')
+        if (lastAssistant) {
+          const ctx = extractDesignContext(lastAssistant.content)
+          setDesignSummary(ctx || stripDesignContext(lastAssistant.content))
+        }
         setShowFinalizePanel(true)
       } else {
         setFinalizedProjectId(null)
@@ -175,28 +135,73 @@ export default function ArchitectPage() {
     clearMessages()
     setSessions([session, ...sessions])
     navigate(`/architect/${session.id}`)
-    // Load full session messages
     loadSession(session.id)
   }
 
-  const handleSend = (content: string) => {
-    if (!sessionId || isStreaming) return
+  const handleSend = useCallback((content: string) => {
+    const currentSessionId = useArchitectStore.getState().sessionId
+    if (!currentSessionId || useArchitectStore.getState().isStreaming) return
+
     addMessage({
       id: crypto.randomUUID(),
       role: 'user',
       content,
       createdAt: new Date().toISOString(),
     })
-    const sent = send({ type: 'message', content })
-    if (!sent) {
-      addMessage({
-        id: crypto.randomUUID(),
-        role: 'assistant',
-        content: 'Error: Failed to send message. WebSocket is not connected.',
-        createdAt: new Date().toISOString(),
-      })
-    }
-  }
+
+    setStreaming(true)
+    let firstChunk = true
+
+    const controller = architectApi.streamMessage(currentSessionId, content, {
+      onChunk: (text) => {
+        if (firstChunk) {
+          firstChunk = false
+          addMessage({
+            id: crypto.randomUUID(),
+            role: 'assistant',
+            content: text,
+            isStreaming: true,
+            createdAt: new Date().toISOString(),
+          })
+        } else {
+          appendToLastMessage(text)
+        }
+      },
+      onDone: (fullText) => {
+        setStreaming(false)
+        const state = useArchitectStore.getState()
+        const updated = [...state.messages]
+        if (updated.length > 0) {
+          const last = updated[updated.length - 1]
+          const finalContent = fullText && fullText.length >= last.content.length
+            ? fullText : last.content
+          updated[updated.length - 1] = { ...last, content: finalContent, isStreaming: false }
+          setMessages(updated)
+        }
+      },
+      onFinalizeReady: (designContext) => {
+        if (designContext) {
+          setDesignSummary(designContext)
+        } else {
+          const currentState = useArchitectStore.getState()
+          const lastAssistant = [...currentState.messages].reverse().find(m => m.role === 'assistant')
+          setDesignSummary(lastAssistant?.content || '')
+        }
+        setShowFinalizePanel(true)
+      },
+      onError: (message) => {
+        setStreaming(false)
+        addMessage({
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          content: `Error: ${message}`,
+          createdAt: new Date().toISOString(),
+        })
+      },
+    })
+
+    abortRef.current = controller
+  }, [addMessage, appendToLastMessage, setStreaming, setMessages])
 
   const handleFinalize = async (repoPath: string) => {
     if (!sessionId) throw new Error('No active session')
@@ -205,6 +210,40 @@ export default function ArchitectPage() {
     })
     setFinalizedProjectId(result.id)
     return result
+  }
+
+  const handleDeleteSession = async (id: string) => {
+    if (!confirm('Are you sure you want to delete this session?')) return
+    try {
+      await architectApi.deleteSession(id)
+      const updated = sessions.filter((s) => s.id !== id)
+      setSessions(updated)
+      if (sessionId === id) {
+        setSessionId(null)
+        clearMessages()
+        setShowFinalizePanel(false)
+        navigate('/architect')
+      }
+    } catch {
+      addToast('Failed to delete session.')
+    }
+  }
+
+  const handleBatchDeleteSessions = async (ids: string[]) => {
+    if (!confirm(`Are you sure you want to delete ${ids.length} sessions?`)) return
+    try {
+      await architectApi.batchDeleteSessions(ids)
+      const updated = sessions.filter((s) => !ids.includes(s.id))
+      setSessions(updated)
+      if (sessionId && ids.includes(sessionId)) {
+        setSessionId(null)
+        clearMessages()
+        setShowFinalizePanel(false)
+        navigate('/architect')
+      }
+    } catch {
+      addToast('Failed to delete sessions.')
+    }
   }
 
   const handleNewSession = () => {
@@ -216,9 +255,9 @@ export default function ArchitectPage() {
     loadSession(id)
   }
 
-  const headerTitle = activeSession?.name || (sessionId ? 'Architect' : 'Architect')
+  const isConnected = !!sessionId
+  const headerTitle = activeSession?.name || 'Architect'
 
-  // When no session is selected, show session list + empty state
   if (!sessionId) {
     return (
       <>
@@ -229,6 +268,8 @@ export default function ArchitectPage() {
             activeSessionId={null}
             onSelect={handleSelectSession}
             onNew={handleNewSession}
+            onDelete={handleDeleteSession}
+            onBatchDelete={handleBatchDeleteSessions}
           />
           <div className="flex-1 flex items-center justify-center">
             <div className="text-center space-y-4">
@@ -263,6 +304,8 @@ export default function ArchitectPage() {
           activeSessionId={sessionId}
           onSelect={handleSelectSession}
           onNew={handleNewSession}
+          onDelete={handleDeleteSession}
+          onBatchDelete={handleBatchDeleteSessions}
         />
         <div className="flex-1 flex flex-col">
           {/* Messages area */}
