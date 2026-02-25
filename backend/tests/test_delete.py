@@ -269,3 +269,85 @@ async def test_batch_delete_sessions_partial(client, db_session):
     )
     assert response.status_code == 200
     assert response.json()["deleted"] == 1
+
+
+# -- Project Delete Preserves Sessions -----------------------------------------
+
+
+async def _create_project_with_finalized_session(db_session) -> tuple[Project, DesignSession]:
+    """Create a project with a linked finalized design session."""
+    now = datetime.now(timezone.utc)
+    project = Project(
+        id=uuid.uuid4(),
+        name="With Session",
+        description="Has a finalized session",
+        repo_path="/tmp/with-session",
+        status=ProjectStatus.active,
+        created_at=now,
+        updated_at=now,
+    )
+    db_session.add(project)
+    await db_session.flush()
+
+    session = DesignSession(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        status=DesignSessionStatus.finalized,
+        llm_config={"api_key": "sk-test"},
+        created_at=now,
+        updated_at=now,
+    )
+    db_session.add(session)
+
+    msg = DesignMessage(
+        id=uuid.uuid4(),
+        session_id=session.id,
+        role=MessageRole.user,
+        content="Design my project",
+        message_type=MessageType.chat,
+        created_at=now,
+    )
+    db_session.add(msg)
+    await db_session.commit()
+
+    return project, session
+
+
+@pytest.mark.asyncio
+async def test_delete_project_preserves_session(client, db_session):
+    """DELETE /api/v1/projects/{id} preserves the linked design session with project_id=NULL."""
+    project, session = await _create_project_with_finalized_session(db_session)
+
+    response = await client.delete(f"/api/v1/projects/{project.id}")
+    assert response.status_code == 200
+
+    # Session should still exist
+    get_response = await client.get(f"/api/v1/architect/sessions/{session.id}")
+    assert get_response.status_code == 200
+    data = get_response.json()
+    assert data["project_id"] is None
+    assert data["status"] == "finalized"
+
+
+@pytest.mark.asyncio
+async def test_batch_delete_projects_preserves_sessions(client, db_session):
+    """POST /api/v1/projects/batch-delete preserves linked design sessions.
+
+    Note: In PostgreSQL, ON DELETE SET NULL on the FK sets project_id to NULL
+    automatically. SQLite+aiosqlite may not trigger this via raw sa_delete,
+    so we only verify sessions survive (not that project_id is NULL).
+    """
+    p1, s1 = await _create_project_with_finalized_session(db_session)
+    p2, s2 = await _create_project_with_finalized_session(db_session)
+
+    response = await client.post(
+        "/api/v1/projects/batch-delete",
+        json={"ids": [str(p1.id), str(p2.id)]},
+    )
+    assert response.status_code == 200
+    assert response.json()["deleted"] == 2
+
+    # Both sessions should still exist (not cascade-deleted)
+    for s in [s1, s2]:
+        get_response = await client.get(f"/api/v1/architect/sessions/{s.id}")
+        assert get_response.status_code == 200

@@ -264,7 +264,11 @@ async def send_message(
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    if session.status != models.DesignSessionStatus.active:
+    # Auto-reactivate finalized session whose project was deleted
+    if session.status == models.DesignSessionStatus.finalized and session.project_id is None:
+        session.status = models.DesignSessionStatus.active
+        await db.flush()
+    elif session.status != models.DesignSessionStatus.active:
         raise HTTPException(status_code=400, detail="Session is not active")
 
     # Save user message
@@ -316,7 +320,11 @@ async def send_message_stream(
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    if session.status != models.DesignSessionStatus.active:
+    # Auto-reactivate finalized session whose project was deleted
+    if session.status == models.DesignSessionStatus.finalized and session.project_id is None:
+        session.status = models.DesignSessionStatus.active
+        await db.flush()
+    elif session.status != models.DesignSessionStatus.active:
         raise HTTPException(status_code=400, detail="Session is not active")
 
     # Save user message

@@ -105,7 +105,7 @@ class Project(Base):
     # Relationships
     phases: Mapped[list["Phase"]] = relationship("Phase", back_populates="project", cascade="all, delete-orphan")
     design_sessions: Mapped[list["DesignSession"]] = relationship(
-        "DesignSession", back_populates="project", cascade="all, delete-orphan"
+        "DesignSession", back_populates="project"
     )
     workers: Mapped[list["Worker"]] = relationship("Worker", back_populates="project")
 

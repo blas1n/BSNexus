@@ -122,7 +122,13 @@ export default function ArchitectPage() {
         setShowFinalizePanel(false)
       }
     } catch {
-      // Session not found
+      addToast('Session not found. It may have been deleted.')
+      const updated = sessions.filter((s) => s.id !== id)
+      setSessions(updated)
+      setSessionId(null)
+      clearMessages()
+      setShowFinalizePanel(false)
+      navigate('/architect')
     }
   }
 
@@ -191,6 +197,20 @@ export default function ArchitectPage() {
       },
       onError: (message) => {
         setStreaming(false)
+
+        if (message.includes('Session not found')) {
+          addToast('This session no longer exists.')
+          const currentId = useArchitectStore.getState().sessionId
+          if (currentId) {
+            setSessions(useArchitectStore.getState().sessions.filter((s) => s.id !== currentId))
+          }
+          setSessionId(null)
+          clearMessages()
+          setShowFinalizePanel(false)
+          navigate('/architect')
+          return
+        }
+
         addMessage({
           id: crypto.randomUUID(),
           role: 'assistant',
