@@ -13,7 +13,7 @@ services:
     volumes:
       - ..:/workspace:cached
       - claude-code-bashhistory:/commandhistory
-      - claude-code-config:/home/vscode/.claude
+      - ~/.claude:/home/vscode/.claude:cached
     ports:
       - "${EXTERNAL_BACKEND_PORT:-8000}:8000"
       - "${EXTERNAL_FRONTEND_PORT:-3000}:3000"
@@ -21,7 +21,6 @@ services:
       - PYTHONUNBUFFERED=1
       - PYTHONDONTWRITEBYTECODE=1
       - ENVIRONMENT=development
-      - CLAUDE_CONFIG_DIR=/home/vscode/.claude
       - LANG=C.UTF-8
       - LC_ALL=C.UTF-8
       - UV_LINK_MODE=copy
@@ -74,7 +73,6 @@ services:
 
 volumes:
   claude-code-bashhistory:
-  claude-code-config:
   redis-data:
   postgres-data:
 
