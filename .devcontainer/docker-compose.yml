@@ -15,8 +15,8 @@ services:
       - claude-code-bashhistory:/commandhistory
       - claude-code-config:/home/vscode/.claude
     ports:
-      - "8000:8000"
-      - "3000:3000"
+      - "${EXTERNAL_BACKEND_PORT:-8000}:8000"
+      - "${EXTERNAL_FRONTEND_PORT:-3000}:3000"
     environment:
       - PYTHONUNBUFFERED=1
       - PYTHONDONTWRITEBYTECODE=1
