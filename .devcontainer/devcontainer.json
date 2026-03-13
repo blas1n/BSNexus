@@ -1,6 +1,6 @@
 {
   "name": "BSNexus - The master control hub orchestrating every AI project",
-  "dockerComposeFile": "docker-compose.yml",
+  "dockerComposeFile": ["docker-compose.yml", "docker-compose.override.yml"],
   "service": "app",
   "workspaceFolder": "/workspace",
   // Wait for services to be ready
